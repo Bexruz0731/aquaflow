@@ -1,0 +1,180 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                 SUV PRO - ШПАРГАЛКА ПО РАЗВЕРТЫВАНИЮ                         ║
+║                        Сервер: 31.56.113.76                                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 1. ПОДКЛЮЧЕНИЕ К СЕРВЕРУ                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+ssh root@31.56.113.76
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 2. УСТАНОВКА НА СЕРВЕРЕ (одна команда)                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+curl -fsSL https://get.docker.com | sh && \
+apt install -y docker-compose-plugin git curl wget vim htop nano && \
+ufw --force enable && ufw allow 22 && ufw allow 80 && ufw allow 443 && \
+mkdir -p /opt/suvpro && cd /opt/suvpro
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 3. ПЕРЕНОС ФАЙЛОВ (на Windows в PowerShell)                                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+scp -r "C:\Users\user\Desktop\suv pro\*" root@31.56.113.76:/opt/suvpro/
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 4. НАСТРОЙКА .ENV ФАЙЛОВ (на сервере)                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+cd /opt/suvpro
+cp backend/.env.production backend/.env
+cp bot/.env.production bot/.env
+
+# Сгенерировать SECRET_KEY:
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Редактировать:
+nano backend/.env
+nano bot/.env
+
+# Изменить в backend/.env:
+# - SECRET_KEY (вставить сгенерированный)
+# - DATABASE_URL: ...postgres:ВАШ_ПАРОЛЬ_ДЛЯ_БД@postgres...
+# - DATABASE_SYNC_URL: ...postgres:ВАШ_ПАРОЛЬ_ДЛЯ_БД@postgres...
+# - REDIS_URL: redis://:ВАШ_ПАРОЛЬ_ДЛЯ_REDIS@redis...
+# - TELEGRAM_BOT_TOKEN (от @BotFather)
+# - ALLOWED_ORIGINS=http://31.56.113.76
+
+# Изменить в bot/.env:
+# - BOT_TOKEN (от @BotFather)
+# - REDIS_URL: redis://:ВАШ_ПАРОЛЬ_ДЛЯ_REDIS@redis...
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 5. ЗАПУСК ПРОЕКТА                                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+docker compose -f docker-compose.prod.yml up -d --build
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 6. ПРОВЕРКА                                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f
+
+# В браузере открыть:
+# http://31.56.113.76/docs        - API документация
+# http://31.56.113.76/admin       - Админ панель
+# http://31.56.113.76/client      - Клиентское приложение
+# http://31.56.113.76/courier     - Курьерское приложение
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ ПОЛЕЗНЫЕ КОМАНДЫ                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+# Перезапуск
+docker compose -f docker-compose.prod.yml restart
+
+# Остановка
+docker compose -f docker-compose.prod.yml down
+
+# Логи
+docker compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.prod.yml logs -f backend
+docker compose -f docker-compose.prod.yml logs -f bot
+
+# Статус
+docker compose -f docker-compose.prod.yml ps
+
+# Использование ресурсов
+docker stats
+
+# Подключение к БД
+docker compose -f docker-compose.prod.yml exec postgres psql -U postgres -d suvpro
+
+# Бэкап БД
+docker compose -f docker-compose.prod.yml exec postgres pg_dump -U postgres suvpro > backup.sql
+
+# Восстановление БД
+docker compose -f docker-compose.prod.yml exec -T postgres psql -U postgres suvpro < backup.sql
+
+# Обновление после изменений
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Перезапуск конкретного сервиса
+docker compose -f docker-compose.prod.yml restart backend
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ РЕШЕНИЕ ПРОБЛЕМ                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+# Контейнер не запускается
+docker compose -f docker-compose.prod.yml logs <service_name>
+
+# 502 Bad Gateway
+docker compose -f docker-compose.prod.yml logs backend
+docker compose -f docker-compose.prod.yml logs nginx
+
+# БД недоступна
+docker compose -f docker-compose.prod.yml exec postgres pg_isready -U postgres
+docker compose -f docker-compose.prod.yml restart postgres
+
+# Полная перезагрузка (БЕЗ удаления данных)
+docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Очистка (УДАЛИТ ВСЕ ДАННЫЕ!)
+docker compose -f docker-compose.prod.yml down -v
+docker compose -f docker-compose.prod.yml up -d --build
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ СТРУКТУРА КОНТЕЙНЕРОВ                                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+nginx       -> Порт 80, 443    (веб-сервер, прокси)
+backend     -> Порт 8000       (FastAPI API)
+postgres    -> Порт 5432       (База данных)
+redis       -> Порт 6379       (Кэш + очереди)
+bot         -> -               (Telegram бот)
+celery      -> -               (Фоновые задачи)
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ БЕЗОПАСНОСТЬ - ОБЯЗАТЕЛЬНО!                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+✓ Изменить все пароли в .env
+✓ Сгенерировать новый SECRET_KEY
+✓ Использовать сильные пароли (мин. 16 символов)
+✓ Файрвол настроен (порты 22, 80, 443)
+✓ Регулярные бэкапы БД
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ АВТОМАТИЧЕСКИЙ БЭКАП (добавить в crontab)                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+mkdir -p /opt/backups
+crontab -e
+
+# Добавить строку (бэкап каждый день в 3:00 ночи):
+0 3 * * * cd /opt/suvpro && docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U postgres suvpro > /opt/backups/suvpro_$(date +\%Y\%m\%d).sql
+
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  ЧТО ДЕЛАТЬ ЕСЛИ ЧТО-ТО НЕ РАБОТАЕТ:                                        ║
+║  1. Проверить логи: docker compose -f docker-compose.prod.yml logs          ║
+║  2. Проверить статус: docker compose -f docker-compose.prod.yml ps          ║
+║  3. Перезапустить: docker compose -f docker-compose.prod.yml restart        ║
+║  4. Смотреть документацию в DEPLOYMENT_GUIDE.md                             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
