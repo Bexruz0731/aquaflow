@@ -779,6 +779,14 @@ async def create_walkin_order(
             db.add(cb)
             await db.flush()
 
+        # Bug fix: prevent negative container balance
+        max_returnable = returnable_delivered + cb.balance
+        if walkin_containers_returned > max_returnable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Qaytarilgan tara ({walkin_containers_returned} ta) ko'p: yetkaziladi {returnable_delivered} ta + balans {cb.balance} ta",
+            )
+
         old_balance = cb.balance
         cb.balance = cb.balance + returnable_delivered - walkin_containers_returned
         order.containers_delivered = returnable_delivered
@@ -812,24 +820,37 @@ async def create_walkin_order(
                 ).with_for_update()
             )
             wi = wi_result.scalar_one_or_none()
-            if wi:
-                ws_result = await db.execute(
-                    select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
+            # Bug fix: auto-create WarehouseItem+Stock if missing so containers aren't silently lost
+            if wi is None:
+                wi = WarehouseItem(
+                    tenant_id=user.tenant_id,
+                    product_id=returnable_product.id,
+                    name=returnable_product.name,
+                    unit="ta",
+                    is_container=True,
                 )
-                ws = ws_result.scalar_one_or_none()
-                if ws:
-                    empty_before = ws.empty_quantity
-                    ws.empty_quantity += walkin_containers_returned
-                    db.add(WarehouseTransaction(
-                        tenant_id=user.tenant_id,
-                        item_id=wi.id,
-                        order_id=order.id,
-                        transaction_type=WarehouseTransactionType.KIRIM,
-                        quantity=walkin_containers_returned,
-                        balance_before=empty_before,
-                        balance_after=ws.empty_quantity,
-                        note=f"Tez sotuv #{order.id} - mijoz pust tara qaytardi",
-                    ))
+                db.add(wi)
+                await db.flush()
+                db.add(WarehouseStock(tenant_id=user.tenant_id, item_id=wi.id, quantity=0, empty_quantity=0))
+                await db.flush()
+
+            ws_result = await db.execute(
+                select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
+            )
+            ws = ws_result.scalar_one_or_none()
+            if ws:
+                empty_before = ws.empty_quantity
+                ws.empty_quantity += walkin_containers_returned
+                db.add(WarehouseTransaction(
+                    tenant_id=user.tenant_id,
+                    item_id=wi.id,
+                    order_id=order.id,
+                    transaction_type=WarehouseTransactionType.KIRIM,
+                    quantity=walkin_containers_returned,
+                    balance_before=empty_before,
+                    balance_after=ws.empty_quantity,
+                    note=f"Tez sotuv #{order.id} - mijoz pust tara qaytardi",
+                ))
 
     # ── 10. Handle debt ───────────────────────────────────────────────────
     if debt_amt > 0:
@@ -1134,6 +1155,14 @@ async def complete_order(
             db.add(cb)
             await db.flush()
 
+        # Bug fix: prevent negative container balance
+        max_returnable = returnable_delivered + cb.balance
+        if data.containers_returned > max_returnable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Qaytarilgan tara ({data.containers_returned} ta) ko'p: yetkaziladi {returnable_delivered} ta + balans {cb.balance} ta",
+            )
+
         old_balance = cb.balance
         cb.balance = cb.balance + returnable_delivered - data.containers_returned
         order.containers_delivered = returnable_delivered
@@ -1209,25 +1238,38 @@ async def complete_order(
                 )
                 wi = wi_result.scalar_one_or_none()
 
-                if wi:
-                    ws_result = await db.execute(
-                        select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
+                # Bug fix: auto-create WarehouseItem+Stock if missing so containers aren't silently lost
+                if wi is None:
+                    wi = WarehouseItem(
+                        tenant_id=order.tenant_id,
+                        product_id=product.id,
+                        name=product.name,
+                        unit="ta",
+                        is_container=True,
                     )
-                    ws = ws_result.scalar_one_or_none()
+                    db.add(wi)
+                    await db.flush()
+                    db.add(WarehouseStock(tenant_id=order.tenant_id, item_id=wi.id, quantity=0, empty_quantity=0))
+                    await db.flush()
 
-                    if ws:
-                        empty_before = ws.empty_quantity
-                        ws.empty_quantity += data.containers_returned
-                        db.add(WarehouseTransaction(
-                            tenant_id=order.tenant_id,
-                            item_id=wi.id,
-                            order_id=order.id,
-                            transaction_type=WarehouseTransactionType.KIRIM,
-                            quantity=data.containers_returned,
-                            balance_before=empty_before,
-                            balance_after=ws.empty_quantity,
-                            note=f"Buyurtma #{order.id} - mijoz pust tara qaytardi",
-                        ))
+                ws_result = await db.execute(
+                    select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
+                )
+                ws = ws_result.scalar_one_or_none()
+
+                if ws:
+                    empty_before = ws.empty_quantity
+                    ws.empty_quantity += data.containers_returned
+                    db.add(WarehouseTransaction(
+                        tenant_id=order.tenant_id,
+                        item_id=wi.id,
+                        order_id=order.id,
+                        transaction_type=WarehouseTransactionType.KIRIM,
+                        quantity=data.containers_returned,
+                        balance_before=empty_before,
+                        balance_after=ws.empty_quantity,
+                        note=f"Buyurtma #{order.id} - mijoz pust tara qaytardi",
+                    ))
                 break  # Only process first returnable product
 
     # Update courier balances when order is delivered
