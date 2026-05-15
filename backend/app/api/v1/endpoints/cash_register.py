@@ -1,5 +1,7 @@
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from typing import List
+
+TASHKENT = timezone(timedelta(hours=5))
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,11 +34,11 @@ async def get_cash_collections(
     )
 
     if start_date:
-        start_datetime = datetime.combine(start_date, datetime.min.time())
+        start_datetime = datetime.combine(start_date, datetime.min.time(), tzinfo=TASHKENT)
         query = query.where(CourierCashCollection.collection_date >= start_datetime)
 
     if end_date:
-        end_datetime = datetime.combine(end_date, datetime.max.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time(), tzinfo=TASHKENT)
         query = query.where(CourierCashCollection.collection_date <= end_datetime)
 
     if courier_id:
@@ -122,11 +124,11 @@ async def get_cash_summary(
     ).where(CourierCashCollection.tenant_id == user.tenant_id)
 
     if start_date:
-        start_datetime = datetime.combine(start_date, datetime.min.time())
+        start_datetime = datetime.combine(start_date, datetime.min.time(), tzinfo=TASHKENT)
         query = query.where(CourierCashCollection.collection_date >= start_datetime)
 
     if end_date:
-        end_datetime = datetime.combine(end_date, datetime.max.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time(), tzinfo=TASHKENT)
         query = query.where(CourierCashCollection.collection_date <= end_datetime)
 
     result = await db.execute(query)

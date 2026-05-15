@@ -30,6 +30,7 @@ class ShiftClose(BaseModel):
     actual_full_containers: int = Field(default=0, ge=0)
     actual_empty_containers: int = Field(default=0, ge=0)
     note: Optional[str] = None
+    return_goods: bool = Field(default=True)
 
 
 class CourierUpdate(BaseModel):
@@ -204,26 +205,39 @@ async def list_couriers(
 
     couriers_data = []
     for c, u in rows:
-        # Get completed orders count for today
+        # Get completed orders count for today (by delivery date, not creation date)
         today_orders = (await db.execute(
             select(func.count()).where(
                 Order.courier_id == c.id,
                 Order.status == OrderStatus.YETKAZILDI,
-                Order.created_at >= today_start,
-                Order.created_at <= today_end,
+                Order.delivered_at >= today_start,
+                Order.delivered_at <= today_end,
             )
         )).scalar_one() or 0
 
-        # Get total income collected today (exclude deleted orders)
-        today_income = (await db.execute(
+        # Get total income collected today (orders + debt payments)
+        from app.models.finance import DebtTransaction, DebtTransactionType
+        today_order_income = (await db.execute(
             select(func.coalesce(func.sum(Order.paid_amount - Order.advance_used), 0)).where(
                 Order.courier_id == c.id,
                 Order.is_deleted == False,
                 Order.status == OrderStatus.YETKAZILDI,
-                Order.created_at >= today_start,
-                Order.created_at <= today_end,
+                Order.delivered_at >= today_start,
+                Order.delivered_at <= today_end,
             )
         )).scalar_one() or 0
+
+        today_debt_income = (await db.execute(
+            select(func.coalesce(func.sum(DebtTransaction.amount), 0)).where(
+                DebtTransaction.created_by_id == c.user_id,
+                DebtTransaction.transaction_type == DebtTransactionType.PAYMENT,
+                DebtTransaction.tenant_id == user.tenant_id,
+                DebtTransaction.created_at >= today_start,
+                DebtTransaction.created_at <= today_end,
+            )
+        )).scalar_one() or 0
+
+        today_income = today_order_income + today_debt_income
 
         couriers_data.append({
             "id": str(c.id),
@@ -271,20 +285,33 @@ async def get_my_courier_profile(
         select(func.count()).where(
             Order.courier_id == courier.id,
             Order.status == OrderStatus.YETKAZILDI,
-            Order.created_at >= today_start,
-            Order.created_at <= today_end,
+            Order.delivered_at >= today_start,
+            Order.delivered_at <= today_end,
         )
     )).scalar_one() or 0
 
-    today_income = (await db.execute(
+    from app.models.finance import DebtTransaction, DebtTransactionType
+    today_order_income = (await db.execute(
         select(func.coalesce(func.sum(Order.paid_amount - Order.advance_used), 0)).where(
             Order.courier_id == courier.id,
             Order.is_deleted == False,
             Order.status == OrderStatus.YETKAZILDI,
-            Order.created_at >= today_start,
-            Order.created_at <= today_end,
+            Order.delivered_at >= today_start,
+            Order.delivered_at <= today_end,
         )
     )).scalar_one() or 0
+
+    today_debt_income = (await db.execute(
+        select(func.coalesce(func.sum(DebtTransaction.amount), 0)).where(
+            DebtTransaction.created_by_id == user.id,
+            DebtTransaction.transaction_type == DebtTransactionType.PAYMENT,
+            DebtTransaction.tenant_id == user.tenant_id,
+            DebtTransaction.created_at >= today_start,
+            DebtTransaction.created_at <= today_end,
+        )
+    )).scalar_one() or 0
+
+    today_income = today_order_income + today_debt_income
 
     return {
         "id": str(courier.id),
@@ -375,7 +402,7 @@ async def get_courier(
         )
     )).scalar_one() or 0
 
-    today_income = (await db.execute(
+    today_order_income = (await db.execute(
         select(func.coalesce(func.sum(Order.paid_amount - Order.advance_used), 0)).where(
             Order.courier_id == c.id,
             Order.is_deleted == False,
@@ -384,6 +411,19 @@ async def get_courier(
             Order.delivered_at <= today_end,
         )
     )).scalar_one() or 0
+
+    from app.models.finance import DebtTransaction, DebtTransactionType
+    today_debt_income = (await db.execute(
+        select(func.coalesce(func.sum(DebtTransaction.amount), 0)).where(
+            DebtTransaction.created_by_id == c.user_id,
+            DebtTransaction.transaction_type == DebtTransactionType.PAYMENT,
+            DebtTransaction.tenant_id == user.tenant_id,
+            DebtTransaction.created_at >= today_start,
+            DebtTransaction.created_at <= today_end,
+        )
+    )).scalar_one() or 0
+
+    today_income = today_order_income + today_debt_income
 
     return {
         "id": str(c.id),
@@ -503,9 +543,8 @@ async def open_shift(
     courier.shift_started_at = datetime.now(timezone.utc)
     courier.full_containers = data.full_containers
     courier.empty_containers = 0
-    courier.cash_balance = 0
-    courier.card_balance = 0
-    courier.payme_balance = 0
+    # Do NOT reset balances — shift_close already zeroed them.
+    # Any remaining balance is from inter-shift deliveries and belongs to the courier.
 
     from app.models.courier import CourierBalanceLog
     log = CourierBalanceLog(
@@ -513,7 +552,7 @@ async def open_shift(
         tenant_id=courier.tenant_id,
         operation="shift_open",
         full_containers_delta=data.full_containers,
-        note=f"Smena ochildi. Boshlang'ich to'la tara: {data.full_containers}",
+        note=f"Smena ochildi. Boshlang'ich to'la tara: {data.full_containers}, balans: naqd={courier.cash_balance}, karta={courier.card_balance}",
     )
     db.add(log)
     await db.flush()
@@ -566,12 +605,11 @@ async def close_shift(
         from app.tasks.notifications import notify_shift_discrepancy
         notify_shift_discrepancy.delay(str(courier.id), cash_diff, card_diff, payme_diff)
 
-    # Return unsold full containers to warehouse before resetting
-    if data.actual_full_containers > 0:
+    # Return unsold full containers to warehouse (only if return_goods=True)
+    if data.actual_full_containers > 0 and data.return_goods:
         from app.models.warehouse import WarehouseItem, WarehouseStock, WarehouseTransaction, WarehouseTransactionType
         from app.models.product import Product
 
-        # Find water 18.9L product (returnable container)
         prod_result = await db.execute(
             select(Product)
             .where(Product.tenant_id == courier.tenant_id, Product.is_returnable_container == True)
@@ -580,7 +618,6 @@ async def close_shift(
         water_product = prod_result.scalar_one_or_none()
 
         if water_product:
-            # Find warehouse item for this product
             wi_result = await db.execute(
                 select(WarehouseItem)
                 .where(WarehouseItem.product_id == water_product.id, WarehouseItem.tenant_id == courier.tenant_id)
@@ -594,10 +631,7 @@ async def close_shift(
                 ws = ws_result.scalar_one_or_none()
 
                 if ws:
-                    # Add unsold full containers back to warehouse
                     ws.quantity += data.actual_full_containers
-
-                    # Record transaction
                     db.add(WarehouseTransaction(
                         tenant_id=courier.tenant_id,
                         item_id=wi.id,
@@ -609,66 +643,20 @@ async def close_shift(
                         created_by_id=user.id,
                     ))
 
-    # Return empty containers to warehouse before resetting
-    if data.actual_empty_containers > 0:
-        from app.models.warehouse import WarehouseItem, WarehouseStock, WarehouseTransaction, WarehouseTransactionType
-        from app.models.product import Product
-
-        # Find water 18.9L product (returnable container)
-        prod_result = await db.execute(
-            select(Product)
-            .where(Product.tenant_id == courier.tenant_id, Product.is_returnable_container == True)
-            .limit(1)
-        )
-        water_product = prod_result.scalar_one_or_none()
-
-        if water_product:
-            # Find warehouse item for this product
-            wi_result = await db.execute(
-                select(WarehouseItem)
-                .where(WarehouseItem.product_id == water_product.id, WarehouseItem.tenant_id == courier.tenant_id)
-            )
-            wi = wi_result.scalar_one_or_none()
-
-            if wi:
-                ws_result = await db.execute(
-                    select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
-                )
-                ws = ws_result.scalar_one_or_none()
-
-                if ws:
-                    # Add empty containers back to warehouse
-                    ws.empty_quantity += data.actual_empty_containers
-
-                    # Record transaction
-                    db.add(WarehouseTransaction(
-                        tenant_id=courier.tenant_id,
-                        item_id=wi.id,
-                        transaction_type=WarehouseTransactionType.KIRIM,
-                        quantity=data.actual_empty_containers,
-                        balance_before=ws.empty_quantity - data.actual_empty_containers,
-                        balance_after=ws.empty_quantity,
-                        note=f"Kuryer smena yopdi - bo'sh tara qaytarildi",
-                        created_by_id=user.id,
-                    ))
-
-    # Record cash collection split by delivery date
-    # If courier closes shift late (next day), money is attributed to the correct dates
+    # Record cash collection by delivery date using actual per-day order amounts
     from app.models.finance import CourierCashCollection
-    from app.models.order import OrderStatus
-    from sqlalchemy import func
+    from collections import defaultdict
 
     _tz_tashkent = timezone(timedelta(hours=5))
     shift_start = courier.shift_started_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
 
-    _date_expr = func.date(Order.delivered_at.op("AT TIME ZONE")(text("'Asia/Tashkent'")))
-    date_rows = (await db.execute(
+    # Portable query: fetch orders and group by Tashkent date in Python
+    orders_result = await db.execute(
         select(
-            _date_expr.label("d"),
-            func.coalesce(func.sum(Order.cash_amount), 0).label("cash"),
-            func.coalesce(func.sum(Order.card_amount), 0).label("card"),
-            func.coalesce(func.sum(Order.payme_amount), 0).label("payme"),
-            func.count(Order.id).label("cnt"),
+            Order.delivered_at,
+            Order.cash_amount,
+            Order.card_amount,
+            Order.payme_amount,
         )
         .where(
             Order.courier_id == courier.id,
@@ -676,11 +664,24 @@ async def close_shift(
             Order.delivered_at >= shift_start,
             Order.delivered_at.isnot(None),
         )
-        .group_by(text("1"))
-        .order_by(text("1"))
-    )).all()
+        .order_by(Order.delivered_at)
+    )
+    orders = orders_result.all()
 
-    if not date_rows:
+    date_groups = defaultdict(lambda: {'cash': 0, 'card': 0, 'payme': 0, 'cnt': 0})
+    for o in orders:
+        dt = o.delivered_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_date = dt.astimezone(_tz_tashkent).date()
+        date_groups[local_date]['cash'] += o.cash_amount or 0
+        date_groups[local_date]['card'] += o.card_amount or 0
+        date_groups[local_date]['payme'] += o.payme_amount or 0
+        date_groups[local_date]['cnt'] += 1
+
+    sorted_dates = sorted(date_groups.keys())
+
+    if not sorted_dates:
         today_dt = datetime.now(_tz_tashkent).replace(hour=0, minute=0, second=0, microsecond=0)
         db.add(CourierCashCollection(
             tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
@@ -691,38 +692,29 @@ async def close_shift(
             orders_completed=0, note=data.note, collection_date=today_dt,
         ))
     else:
-        total_o_cash = sum(r.cash for r in date_rows)
-        total_o_card = sum(r.card for r in date_rows)
-        total_o_payme = sum(r.payme for r in date_rows)
-        rem_cash, rem_card, rem_payme = data.actual_cash, data.actual_card, data.actual_payme
-
-        for i, row in enumerate(date_rows):
-            is_last = (i == len(date_rows) - 1)
-            if is_last:
-                d_cash, d_card, d_payme = rem_cash, rem_card, rem_payme
-            else:
-                d_cash = round(data.actual_cash * row.cash / total_o_cash) if total_o_cash else 0
-                d_card = round(data.actual_card * row.card / total_o_card) if total_o_card else 0
-                d_payme = round(data.actual_payme * row.payme / total_o_payme) if total_o_payme else 0
-                rem_cash -= d_cash; rem_card -= d_card; rem_payme -= d_payme
-
-            d = row.d
+        for i, d in enumerate(sorted_dates):
+            is_last = (i == len(sorted_dates) - 1)
+            grp = date_groups[d]
             col_dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_tz_tashkent)
             db.add(CourierCashCollection(
                 tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
-                cash_amount=d_cash, card_amount=d_card, payme_amount=d_payme,
-                total_amount=d_cash + d_card + d_payme,
+                cash_amount=grp['cash'], card_amount=grp['card'], payme_amount=grp['payme'],
+                total_amount=grp['cash'] + grp['card'] + grp['payme'],
                 full_containers_returned=data.actual_full_containers if is_last else 0,
                 empty_containers_returned=data.actual_empty_containers if is_last else 0,
-                orders_completed=row.cnt, note=data.note, collection_date=col_dt,
+                orders_completed=grp['cnt'], note=data.note, collection_date=col_dt,
             ))
 
     # Reset courier balances to zero after shift close
     courier.cash_balance = 0
     courier.card_balance = 0
     courier.payme_balance = 0
-    courier.full_containers = 0
-    courier.empty_containers = 0
+    if data.return_goods:
+        courier.full_containers = 0
+        courier.empty_containers = 0
+    else:
+        courier.full_containers = data.actual_full_containers
+        courier.empty_containers = data.actual_empty_containers
 
     await db.flush()
     return {
@@ -810,11 +802,19 @@ async def open_courier_shift_by_boshliq(
 
     courier.shift_status = ShiftStatus.OPEN
     courier.shift_started_at = datetime.now(timezone.utc)
-    courier.cash_balance = 0
-    courier.card_balance = 0
-    courier.payme_balance = 0
+    # Do NOT reset balances here — shift_close already zeroed them.
+    # Any balance present now is from deliveries made after the last close
+    # (inter-shift period) and belongs to the courier.
     if data.full_containers > 0:
         courier.full_containers = data.full_containers
+
+    from app.models.courier import CourierBalanceLog
+    db.add(CourierBalanceLog(
+        courier_id=courier.id,
+        tenant_id=courier.tenant_id,
+        operation="shift_open",
+        note=f"Smena ochildi (web). Boshlang'ich balans: naqd={courier.cash_balance}, karta={courier.card_balance}",
+    ))
 
     await db.flush()
     return {"status": "ok", "message": "Smena ochildi"}
@@ -871,12 +871,11 @@ async def close_courier_shift_by_operator(
         from app.tasks.notifications import notify_shift_discrepancy
         notify_shift_discrepancy.delay(str(courier.id), cash_diff, card_diff, payme_diff)
 
-    # Return unsold full containers to warehouse before resetting
-    if data.actual_full_containers > 0:
+    # Return unsold full containers to warehouse (only if return_goods=True)
+    if data.actual_full_containers > 0 and data.return_goods:
         from app.models.warehouse import WarehouseItem, WarehouseStock, WarehouseTransaction, WarehouseTransactionType
         from app.models.product import Product
 
-        # Find water 18.9L product (returnable container)
         prod_result = await db.execute(
             select(Product)
             .where(Product.tenant_id == courier.tenant_id, Product.is_returnable_container == True)
@@ -885,7 +884,6 @@ async def close_courier_shift_by_operator(
         water_product = prod_result.scalar_one_or_none()
 
         if water_product:
-            # Find warehouse item for this product
             wi_result = await db.execute(
                 select(WarehouseItem)
                 .where(WarehouseItem.product_id == water_product.id, WarehouseItem.tenant_id == courier.tenant_id)
@@ -899,10 +897,7 @@ async def close_courier_shift_by_operator(
                 ws = ws_result.scalar_one_or_none()
 
                 if ws:
-                    # Add unsold full containers back to warehouse
                     ws.quantity += data.actual_full_containers
-
-                    # Record transaction
                     db.add(WarehouseTransaction(
                         tenant_id=courier.tenant_id,
                         item_id=wi.id,
@@ -914,66 +909,20 @@ async def close_courier_shift_by_operator(
                         created_by_id=user.id,
                     ))
 
-    # Return empty containers to warehouse before resetting
-    if data.actual_empty_containers > 0:
-        from app.models.warehouse import WarehouseItem, WarehouseStock, WarehouseTransaction, WarehouseTransactionType
-        from app.models.product import Product
-
-        # Find water 18.9L product (returnable container)
-        prod_result = await db.execute(
-            select(Product)
-            .where(Product.tenant_id == courier.tenant_id, Product.is_returnable_container == True)
-            .limit(1)
-        )
-        water_product = prod_result.scalar_one_or_none()
-
-        if water_product:
-            # Find warehouse item for this product
-            wi_result = await db.execute(
-                select(WarehouseItem)
-                .where(WarehouseItem.product_id == water_product.id, WarehouseItem.tenant_id == courier.tenant_id)
-            )
-            wi = wi_result.scalar_one_or_none()
-
-            if wi:
-                ws_result = await db.execute(
-                    select(WarehouseStock).where(WarehouseStock.item_id == wi.id).with_for_update()
-                )
-                ws = ws_result.scalar_one_or_none()
-
-                if ws:
-                    # Add empty containers back to warehouse
-                    ws.empty_quantity += data.actual_empty_containers
-
-                    # Record transaction
-                    db.add(WarehouseTransaction(
-                        tenant_id=courier.tenant_id,
-                        item_id=wi.id,
-                        transaction_type=WarehouseTransactionType.KIRIM,
-                        quantity=data.actual_empty_containers,
-                        balance_before=ws.empty_quantity - data.actual_empty_containers,
-                        balance_after=ws.empty_quantity,
-                        note=f"Kuryer smena yopdi (operator) - bo'sh tara qaytarildi",
-                        created_by_id=user.id,
-                    ))
-
-    # Record cash collection split by delivery date
-    # If courier closes shift late (next day), money is attributed to the correct dates
+    # Record cash collection by delivery date using actual per-day order amounts
     from app.models.finance import CourierCashCollection
-    from app.models.order import OrderStatus
-    from sqlalchemy import func
+    from collections import defaultdict
 
     _tz_tashkent = timezone(timedelta(hours=5))
     shift_start = courier.shift_started_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
 
-    _date_expr = func.date(Order.delivered_at.op("AT TIME ZONE")(text("'Asia/Tashkent'")))
-    date_rows = (await db.execute(
+    # Portable query: fetch orders and group by Tashkent date in Python
+    orders_result = await db.execute(
         select(
-            _date_expr.label("d"),
-            func.coalesce(func.sum(Order.cash_amount), 0).label("cash"),
-            func.coalesce(func.sum(Order.card_amount), 0).label("card"),
-            func.coalesce(func.sum(Order.payme_amount), 0).label("payme"),
-            func.count(Order.id).label("cnt"),
+            Order.delivered_at,
+            Order.cash_amount,
+            Order.card_amount,
+            Order.payme_amount,
         )
         .where(
             Order.courier_id == courier.id,
@@ -981,11 +930,24 @@ async def close_courier_shift_by_operator(
             Order.delivered_at >= shift_start,
             Order.delivered_at.isnot(None),
         )
-        .group_by(text("1"))
-        .order_by(text("1"))
-    )).all()
+        .order_by(Order.delivered_at)
+    )
+    orders = orders_result.all()
 
-    if not date_rows:
+    date_groups = defaultdict(lambda: {'cash': 0, 'card': 0, 'payme': 0, 'cnt': 0})
+    for o in orders:
+        dt = o.delivered_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_date = dt.astimezone(_tz_tashkent).date()
+        date_groups[local_date]['cash'] += o.cash_amount or 0
+        date_groups[local_date]['card'] += o.card_amount or 0
+        date_groups[local_date]['payme'] += o.payme_amount or 0
+        date_groups[local_date]['cnt'] += 1
+
+    sorted_dates = sorted(date_groups.keys())
+
+    if not sorted_dates:
         today_dt = datetime.now(_tz_tashkent).replace(hour=0, minute=0, second=0, microsecond=0)
         db.add(CourierCashCollection(
             tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
@@ -996,38 +958,29 @@ async def close_courier_shift_by_operator(
             orders_completed=0, note=data.note, collection_date=today_dt,
         ))
     else:
-        total_o_cash = sum(r.cash for r in date_rows)
-        total_o_card = sum(r.card for r in date_rows)
-        total_o_payme = sum(r.payme for r in date_rows)
-        rem_cash, rem_card, rem_payme = data.actual_cash, data.actual_card, data.actual_payme
-
-        for i, row in enumerate(date_rows):
-            is_last = (i == len(date_rows) - 1)
-            if is_last:
-                d_cash, d_card, d_payme = rem_cash, rem_card, rem_payme
-            else:
-                d_cash = round(data.actual_cash * row.cash / total_o_cash) if total_o_cash else 0
-                d_card = round(data.actual_card * row.card / total_o_card) if total_o_card else 0
-                d_payme = round(data.actual_payme * row.payme / total_o_payme) if total_o_payme else 0
-                rem_cash -= d_cash; rem_card -= d_card; rem_payme -= d_payme
-
-            d = row.d
+        for i, d in enumerate(sorted_dates):
+            is_last = (i == len(sorted_dates) - 1)
+            grp = date_groups[d]
             col_dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_tz_tashkent)
             db.add(CourierCashCollection(
                 tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
-                cash_amount=d_cash, card_amount=d_card, payme_amount=d_payme,
-                total_amount=d_cash + d_card + d_payme,
+                cash_amount=grp['cash'], card_amount=grp['card'], payme_amount=grp['payme'],
+                total_amount=grp['cash'] + grp['card'] + grp['payme'],
                 full_containers_returned=data.actual_full_containers if is_last else 0,
                 empty_containers_returned=data.actual_empty_containers if is_last else 0,
-                orders_completed=row.cnt, note=data.note, collection_date=col_dt,
+                orders_completed=grp['cnt'], note=data.note, collection_date=col_dt,
             ))
 
     # Reset courier balances to zero after shift close
     courier.cash_balance = 0
     courier.card_balance = 0
     courier.payme_balance = 0
-    courier.full_containers = 0
-    courier.empty_containers = 0
+    if data.return_goods:
+        courier.full_containers = 0
+        courier.empty_containers = 0
+    else:
+        courier.full_containers = data.actual_full_containers
+        courier.empty_containers = data.actual_empty_containers
 
     await db.flush()
     return {
@@ -1119,7 +1072,21 @@ async def issue_products_to_courier(
                 detail=f"Insufficient stock. Available: {stock.quantity if stock else 0}"
             )
 
+        balance_before = stock.quantity
         stock.quantity -= item.quantity
+
+        from app.models.warehouse import WarehouseTransaction, WarehouseTransactionType
+        db.add(WarehouseTransaction(
+            tenant_id=user.tenant_id,
+            item_id=warehouse_item.id,
+            courier_id=courier_id,
+            created_by_id=user.id,
+            transaction_type=WarehouseTransactionType.CHIQIM,
+            quantity=item.quantity,
+            balance_before=balance_before,
+            balance_after=stock.quantity,
+            note=f"Kuryerga berildi (qo'shimcha chiqim)",
+        ))
 
         courier_inv_result = await db.execute(
             select(CourierInventory).where(
@@ -1192,10 +1159,25 @@ async def return_products_from_courier(
         )
         stock = stock_result.scalar_one_or_none()
         if stock:
+            balance_before = stock.quantity
             stock.quantity += item.quantity
         else:
+            balance_before = 0
             stock = WarehouseStock(item_id=warehouse_item.id, quantity=item.quantity, empty_quantity=0)
             db.add(stock)
+
+        from app.models.warehouse import WarehouseTransaction, WarehouseTransactionType
+        db.add(WarehouseTransaction(
+            tenant_id=user.tenant_id,
+            item_id=warehouse_item.id,
+            courier_id=courier_id,
+            created_by_id=user.id,
+            transaction_type=WarehouseTransactionType.KIRIM,
+            quantity=item.quantity,
+            balance_before=balance_before,
+            balance_after=balance_before + item.quantity,
+            note=f"Kuryer qaytardi (qo'shimcha kirim)",
+        ))
 
     await db.flush()
     return {"status": "ok", "message": "Products returned successfully"}
@@ -1224,11 +1206,23 @@ async def get_courier_daily_summary(
         SQLDate
     ).label("day")
 
+    # Subquery: total delivered quantity per order from order_items
+    # (containers_delivered only tracks returnable 18.9L gallons;
+    #  this covers all product types including non-returnable 5L/10L)
+    item_agg = (
+        select(
+            OrderItem.order_id,
+            func.sum(OrderItem.delivered_quantity).label("total_qty"),
+        )
+        .group_by(OrderItem.order_id)
+        .subquery()
+    )
+
     rows = (await db.execute(
         select(
             day_expr,
             func.count(Order.id).label("orders_count"),
-            func.coalesce(func.sum(Order.containers_delivered), 0).label("total_delivered"),
+            func.coalesce(func.sum(item_agg.c.total_qty), 0).label("total_delivered"),
             func.coalesce(func.sum(Order.containers_returned), 0).label("total_returned"),
             func.coalesce(func.sum(Order.paid_amount - Order.advance_used), 0).label("total_income"),
             func.coalesce(func.sum(Order.cash_amount), 0).label("cash_income"),
@@ -1236,6 +1230,7 @@ async def get_courier_daily_summary(
             func.coalesce(func.sum(Order.payme_amount), 0).label("payme_income"),
             func.coalesce(func.sum(Order.advance_used), 0).label("advance_income"),
         )
+        .outerjoin(item_agg, item_agg.c.order_id == Order.id)
         .where(
             Order.courier_id == courier_id,
             Order.tenant_id == user.tenant_id,
@@ -1344,11 +1339,12 @@ async def get_courier_orders_by_date(
             for oi, prod in items_result.all()
         ]
 
+        total_delivered_qty = sum(item["delivered_quantity"] for item in items)
         result.append({
             "id": order.id,
             "client_name": client_name,
             "delivery_address": delivery_address,
-            "containers_delivered": order.containers_delivered,
+            "containers_delivered": total_delivered_qty,
             "containers_returned": order.containers_returned,
             "paid_amount": order.paid_amount,
             "cash_amount": order.cash_amount,
@@ -1838,14 +1834,65 @@ async def delete_expense(
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
 
-    # Refund courier's balance
     courier_result = await db.execute(select(Courier).where(Courier.id == courier_id).with_for_update())
     courier = courier_result.scalar_one_or_none()
     if courier:
-        if expense.payment_method == "naqd":
-            courier.cash_balance += expense.amount
+        if courier.shift_status == ShiftStatus.OPEN:
+            # Shift is still open — return money back to courier balance
+            if expense.payment_method == "naqd":
+                courier.cash_balance += expense.amount
+            else:
+                courier.card_balance += expense.amount
         else:
-            courier.card_balance += expense.amount
+            # Shift is closed — money was already collected; record as additional cash collection
+            from app.models.finance import CourierCashCollection
+            is_card = expense.payment_method == "karta"
+            db.add(CourierCashCollection(
+                tenant_id=expense.tenant_id,
+                courier_id=courier.id,
+                collected_by_id=user.id,
+                cash_amount=0 if is_card else expense.amount,
+                card_amount=expense.amount if is_card else 0,
+                payme_amount=0,
+                total_amount=expense.amount,
+                orders_completed=0,
+                note=f"Xarajat bekor qilindi: {expense.title} ({expense.amount:,} so'm)",
+                collection_date=datetime.now(timezone.utc),
+            ))
+
+    await db.delete(expense)
+    await db.flush()
+
+
+class SetPasswordRequest(BaseModel):
+    password: str = Field(..., min_length=4)
+
+
+@router.post("/{courier_id}/set-password", status_code=200)
+async def set_courier_password(
+    courier_id: UUID,
+    data: SetPasswordRequest,
+    user: User = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set or reset password for a courier (web login)."""
+    from app.core.security import hash_password
+
+    result = await db.execute(
+        select(Courier).where(Courier.id == courier_id, Courier.tenant_id == user.tenant_id)
+    )
+    courier = result.scalar_one_or_none()
+    if not courier:
+        raise HTTPException(status_code=404, detail="Courier not found")
+
+    user_result = await db.execute(select(User).where(User.id == courier.user_id).with_for_update())
+    courier_user = user_result.scalar_one_or_none()
+    if not courier_user:
+        raise HTTPException(status_code=404, detail="Courier user not found")
+
+    courier_user.hashed_password = hash_password(data.password)
+    await db.flush()
+    return {"ok": True, "message": "Parol muvaffaqiyatli o'rnatildi"}
 
     await db.delete(expense)
     await db.flush()
