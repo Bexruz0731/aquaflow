@@ -41,7 +41,7 @@ class Product(Base, TimestampMixin):
 
     price = Column(Integer, nullable=False)  # in UZS, integer
     volume = Column(Integer, nullable=True)  # numeric value
-    volume_unit = Column(Enum(VolumeUnit, native_enum=False), nullable=True)
+    volume_unit = Column(Enum(VolumeUnit, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=True)
 
     inactive_threshold_days = Column(Integer, default=30, nullable=False)
     is_returnable_container = Column(Boolean, default=False, nullable=False)  # 18.9L only

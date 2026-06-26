@@ -43,9 +43,9 @@ class Order(Base, TimestampMixin):
     courier_id = Column(UUID(as_uuid=True), ForeignKey("couriers.id", ondelete="SET NULL"), nullable=True, index=True)
     address_id = Column(UUID(as_uuid=True), ForeignKey("client_addresses.id", ondelete="SET NULL"), nullable=True)
 
-    status = Column(Enum(OrderStatus, native_enum=False), nullable=False, default=OrderStatus.YANGI, index=True)
-    payment_status = Column(Enum(PaymentStatus, native_enum=False), nullable=False, default=PaymentStatus.TOLANMAGAN)
-    payment_method = Column(Enum(PaymentMethod, native_enum=False), nullable=True)
+    status = Column(Enum(OrderStatus, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False, default=OrderStatus.YANGI, index=True)
+    payment_status = Column(Enum(PaymentStatus, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False, default=PaymentStatus.TOLANMAGAN)
+    payment_method = Column(Enum(PaymentMethod, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=True)
 
     total_amount = Column(Integer, nullable=False, default=0)   # in UZS (sum of items)
     discount_amount = Column(Integer, nullable=False, default=0) # discount given
@@ -109,7 +109,7 @@ class OrderStatusHistory(Base):
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
 
-    status = Column(Enum(OrderStatus, native_enum=False), nullable=False)
+    status = Column(Enum(OrderStatus, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False)
     changed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

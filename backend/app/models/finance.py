@@ -47,9 +47,9 @@ class DebtTransaction(Base):
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    transaction_type = Column(Enum(DebtTransactionType, native_enum=False), nullable=False)
+    transaction_type = Column(Enum(DebtTransactionType, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False)
     amount = Column(Integer, nullable=False)           # positive = debt, negative = payment
-    payment_method = Column(Enum(PaymentMethod, native_enum=False), nullable=True)
+    payment_method = Column(Enum(PaymentMethod, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -118,10 +118,10 @@ class TreasuryTransaction(Base):
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    transaction_type = Column(Enum(TreasuryTransactionType, native_enum=False), nullable=False)
-    category = Column(Enum(TreasuryCategory, native_enum=False), nullable=True)
+    transaction_type = Column(Enum(TreasuryTransactionType, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False)
+    category = Column(Enum(TreasuryCategory, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=True)
     amount = Column(Integer, nullable=False)
-    payment_method = Column(Enum(PaymentMethod, native_enum=False), nullable=False)
+    payment_method = Column(Enum(PaymentMethod, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False)
     description = Column(Text, nullable=True)
     transaction_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -169,7 +169,7 @@ class AdminExpense(Base):
 
     title = Column(String(255), nullable=False)
     amount = Column(Integer, nullable=False)
-    payment_method = Column(Enum(PaymentMethod, native_enum=False), nullable=False, default=PaymentMethod.NAQD)
+    payment_method = Column(Enum(PaymentMethod, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False, default=PaymentMethod.NAQD)
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
