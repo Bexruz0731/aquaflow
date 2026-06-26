@@ -64,10 +64,10 @@ async def container_history(
 async def adjust_containers(
     client_id: UUID,
     data: AdjustContainerRequest,
-    user: User = Depends(require_boshliq),
+    user: User = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manual container balance adjustment — only boshliq/super_admin."""
+    """Manual container balance adjustment — operator and above."""
     if data.delta == 0:
         raise HTTPException(status_code=400, detail="Delta cannot be zero")
 
