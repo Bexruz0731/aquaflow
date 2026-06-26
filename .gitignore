@@ -44,3 +44,27 @@ logs/
 
 # SSL
 nginx/ssl/
+
+# Windows scripts (local dev only)
+*.bat
+*.ps1
+
+# Database backups
+backups/
+
+# Internal notes & checklists
+CHEATSHEET.txt
+CHECKLIST.md
+TASKS.md
+README_DEPLOYMENT.md
+QUICK_START.md
+SERVER_SETUP_COMMANDS.md
+DEPLOYMENT_GUIDE.md
+PROJECT_MAP.md
+
+# Utility / one-off scripts
+import_dubli.py
+himalay\ water.xls
+
+# Claude superpowers
+docs/superpowers/
