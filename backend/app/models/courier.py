@@ -22,7 +22,7 @@ class Courier(Base, TimestampMixin):
 
     car_number = Column(String(20), nullable=True)   # Moshina raqami
     is_active = Column(Boolean, default=True, nullable=False)
-    shift_status = Column(Enum(ShiftStatus, native_enum=False, values_callable=lambda x: [m.value for m in x]), default=ShiftStatus.CLOSED, nullable=False)
+    shift_status = Column(Enum(ShiftStatus, native_enum=False), default=ShiftStatus.CLOSED, nullable=False)
     shift_started_at = Column(DateTime(timezone=True), nullable=True)
 
     # Current cash balances

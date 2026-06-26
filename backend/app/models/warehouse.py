@@ -72,7 +72,7 @@ class WarehouseTransaction(Base):
     courier_id = Column(UUID(as_uuid=True), ForeignKey("couriers.id", ondelete="SET NULL"), nullable=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    transaction_type = Column(Enum(WarehouseTransactionType, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False)
+    transaction_type = Column(Enum(WarehouseTransactionType, native_enum=False), nullable=False)
     quantity = Column(Integer, nullable=False)
     balance_before = Column(Integer, nullable=False)
     balance_after = Column(Integer, nullable=False)

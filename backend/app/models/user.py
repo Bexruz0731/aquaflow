@@ -30,7 +30,7 @@ class User(Base, TimestampMixin):
     last_name = Column(String(100), nullable=True)
     phone = Column(String(20), nullable=True, index=True)  # 998901234567
 
-    role = Column(Enum(UserRole, native_enum=False, values_callable=lambda x: [m.value for m in x]), nullable=False, default=UserRole.CLIENT)
+    role = Column(Enum(UserRole, native_enum=False), nullable=False, default=UserRole.CLIENT)
     secondary_role = Column(String(20), nullable=True, default=None)  # optional second role e.g. courier for operator
     hashed_password = Column(String(200), nullable=True)  # only for web panel users
 
