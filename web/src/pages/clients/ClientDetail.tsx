@@ -207,6 +207,7 @@ export default function ClientDetail() {
   const { user: authUser } = useAuthStore()
   const isBoshliq = authUser?.role === 'boshliq' || authUser?.role === 'super_admin'
   const isCurrentUserAgent = authUser?.role === 'agent'
+  const canAdjustContainers = isBoshliq || authUser?.role === 'operator'
 
   // Advance adjustment form (boshliq only)
   const [showAdvanceForm, setShowAdvanceForm] = useState(false)
@@ -814,8 +815,8 @@ export default function ClientDetail() {
             </button>
           </div>
 
-          {/* Manual adjustment — boshliq/super_admin only */}
-          {isBoshliq && (
+          {/* Manual adjustment — operator and above */}
+          {canAdjustContainers && (
             <div className="card space-y-3">
               <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Qo'lda o'zgartirish</p>
               {client.container_product_name && (
