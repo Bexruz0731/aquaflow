@@ -42,7 +42,7 @@ async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends
     result = await db.execute(
         select(User).where(
             or_(User.phone == data.login, User.telegram_username == data.login),
-            User.role.in_([UserRole.BOSHLIQ, UserRole.OPERATOR, UserRole.AGENT, UserRole.SUPER_ADMIN]),
+            User.role.in_([UserRole.BOSHLIQ, UserRole.OPERATOR, UserRole.AGENT, UserRole.SUPER_ADMIN, UserRole.COURIER]),
             User.is_active == True,
         )
     )

@@ -7,6 +7,7 @@ import ProfileTab from '@/pages/ProfileTab'
 import DebtPaymentTab from '@/pages/DebtPaymentTab'
 import WalkinTab from '@/pages/WalkinTab'
 import BottomNav from '@/components/BottomNav'
+import LoginForm from '@/components/LoginForm'
 import type { ActiveOrder } from '@/types'
 import { useQuery } from '@tanstack/react-query'
 import api from '@/api/client'
@@ -94,28 +95,9 @@ export default function App() {
     )
   }
 
-  // Auth error or not registered
+  // Not authenticated — show login form (works both in browser and Telegram)
   if (!token || !profile) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-gray-950 p-6">
-        <div className="text-center">
-          <div className="text-5xl mb-4">🚗</div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-white mb-2">AkoWater Yetkazuvchi</h1>
-          {authError && authError !== 'no_telegram'
-            ? <p className="text-red-400 text-sm mb-4">{authError}</p>
-            : <p className="text-gray-400 text-sm">Iltimos, Telegram bot orqali kiring</p>
-          }
-          {authError && authError !== 'no_telegram' && (
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-green-600 text-white rounded-xl text-sm font-semibold"
-            >
-              Qayta urinish
-            </button>
-          )}
-        </div>
-      </div>
-    )
+    return <LoginForm />
   }
 
   const handleOpenMap = (order: ActiveOrder) => {

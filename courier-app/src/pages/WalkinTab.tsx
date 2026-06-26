@@ -108,6 +108,7 @@ export default function WalkinTab() {
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [cashInput, setCashInput] = useState('')
   const [cardInput, setCardInput] = useState('')
+  const [paymeInput, setPaymeInput] = useState('')
 
   // Confirmation modal
   const [showConfirm, setShowConfirm] = useState(false)
@@ -153,8 +154,12 @@ export default function WalkinTab() {
 
   const cashAmt = Math.min(Math.max(0, parseInt(cashInput) || 0), payableAmt)
   const cardAmt = Math.min(Math.max(0, parseInt(cardInput) || 0), payableAmt - cashAmt)
+  const paymeAmt = Math.min(Math.max(0, parseInt(paymeInput) || 0), payableAmt)
 
   const debtAmt = (() => {
+    if (payMode === 'cash') return cashInput ? Math.max(0, payableAmt - cashAmt) : 0
+    if (payMode === 'card') return cardInput ? Math.max(0, payableAmt - cardAmt) : 0
+    if (payMode === 'payme') return paymeInput ? Math.max(0, payableAmt - paymeAmt) : 0
     if (payMode === 'debt') return payableAmt
     if (payMode === 'cash_debt') return Math.max(0, payableAmt - cashAmt)
     if (payMode === 'card_debt') return Math.max(0, payableAmt - cardAmt)
@@ -231,7 +236,7 @@ export default function WalkinTab() {
     setClientSearch(''); setClientSearchResults([]); setSelectedClient(null)
     setClientAddresses([]); setSelectedAddressId(''); setManualAddress('')
     setComment(''); setQuantities({}); setDiscountInput('')
-    setPayMode('cash'); setCashInput(''); setCardInput('')
+    setPayMode('cash'); setCashInput(''); setCardInput(''); setPaymeInput('')
     setContainersReturnedInput('')
     setShowConfirm(false)
   }
@@ -283,10 +288,16 @@ export default function WalkinTab() {
 
       // Compute final payment amounts
       let finalCash = 0, finalCard = 0, finalPayme = 0, finalDebt = 0
-      if (payMode === 'cash') { finalCash = payableAmt }
-      else if (payMode === 'card') { finalCard = payableAmt }
-      else if (payMode === 'payme') { finalPayme = payableAmt }
-      else if (payMode === 'debt') { finalDebt = payableAmt }
+      if (payMode === 'cash') {
+        finalCash = cashInput ? cashAmt : payableAmt
+        finalDebt = payableAmt - finalCash
+      } else if (payMode === 'card') {
+        finalCard = cardInput ? cardAmt : payableAmt
+        finalDebt = payableAmt - finalCard
+      } else if (payMode === 'payme') {
+        finalPayme = paymeInput ? paymeAmt : payableAmt
+        finalDebt = payableAmt - finalPayme
+      } else if (payMode === 'debt') { finalDebt = payableAmt }
       else if (payMode === 'cash_card') { finalCash = cashAmt; finalCard = cardAmt }
       else if (payMode === 'cash_debt') { finalCash = cashAmt; finalDebt = payableAmt - cashAmt }
       else if (payMode === 'card_debt') { finalCard = cardAmt; finalDebt = payableAmt - cardAmt }
@@ -364,9 +375,12 @@ export default function WalkinTab() {
   const confirmItems = availableItems.filter(i => (quantities[i.product_id] ?? 0) > 0)
 
   const paymentSummary = (() => {
-    if (payMode === 'cash') return `Naqd: ${formatMoney(payableAmt)}`
-    if (payMode === 'card') return `Karta: ${formatMoney(payableAmt)}`
-    if (payMode === 'payme') return `Payme/Click: ${formatMoney(payableAmt)}`
+    const effCash = payMode === 'cash' ? (cashInput ? cashAmt : payableAmt) : cashAmt
+    const effCard = payMode === 'card' ? (cardInput ? cardAmt : payableAmt) : cardAmt
+    const effPayme = paymeInput ? paymeAmt : payableAmt
+    if (payMode === 'cash') return debtAmt > 0 ? `Naqd: ${formatMoney(effCash)} | Qarz: ${formatMoney(debtAmt)}` : `Naqd: ${formatMoney(effCash)}`
+    if (payMode === 'card') return debtAmt > 0 ? `Karta: ${formatMoney(effCard)} | Qarz: ${formatMoney(debtAmt)}` : `Karta: ${formatMoney(effCard)}`
+    if (payMode === 'payme') return debtAmt > 0 ? `Payme: ${formatMoney(effPayme)} | Qarz: ${formatMoney(debtAmt)}` : `Payme/Click: ${formatMoney(effPayme)}`
     if (payMode === 'debt') return `Qarz: ${formatMoney(payableAmt)}`
     if (payMode === 'cash_card') return `Naqd: ${formatMoney(cashAmt)} | Karta: ${formatMoney(cardAmt)}`
     if (payMode === 'cash_debt') return `Naqd: ${formatMoney(cashAmt)} | Qarz: ${formatMoney(debtAmt)}`
@@ -802,7 +816,7 @@ export default function WalkinTab() {
               </div>
 
               {/* Amount inputs depending on mode */}
-              {(payMode === 'cash_card' || payMode === 'cash_debt' || payMode === 'cash_card_debt') && (
+              {(payMode === 'cash' || payMode === 'cash_card' || payMode === 'cash_debt' || payMode === 'cash_card_debt') && (
                 <div className="space-y-1">
                   <p className="text-xs text-green-600 font-medium">Naqd miqdori</p>
                   <input
@@ -811,12 +825,12 @@ export default function WalkinTab() {
                     min={0}
                     value={cashInput}
                     onChange={e => setCashInput(e.target.value)}
-                    placeholder="0"
+                    placeholder={payMode === 'cash' ? String(payableAmt) : '0'}
                     className="w-full bg-green-50 dark:bg-green-900/20 text-green-700 font-bold text-sm rounded-xl px-3 py-2.5 outline-none border-2 border-green-200 dark:border-green-800 focus:border-green-500"
                   />
                 </div>
               )}
-              {(payMode === 'cash_card' || payMode === 'card_debt' || payMode === 'cash_card_debt') && (
+              {(payMode === 'card' || payMode === 'cash_card' || payMode === 'card_debt' || payMode === 'cash_card_debt') && (
                 <div className="space-y-1">
                   <p className="text-xs text-blue-600 font-medium">Karta miqdori</p>
                   <input
@@ -825,19 +839,36 @@ export default function WalkinTab() {
                     min={0}
                     value={cardInput}
                     onChange={e => setCardInput(e.target.value)}
-                    placeholder="0"
+                    placeholder={payMode === 'card' ? String(payableAmt) : '0'}
                     className="w-full bg-blue-50 dark:bg-blue-900/20 text-blue-700 font-bold text-sm rounded-xl px-3 py-2.5 outline-none border-2 border-blue-200 dark:border-blue-800 focus:border-blue-500"
+                  />
+                </div>
+              )}
+              {payMode === 'payme' && (
+                <div className="space-y-1">
+                  <p className="text-xs text-cyan-600 font-medium">Payme miqdori</p>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={paymeInput}
+                    onChange={e => setPaymeInput(e.target.value)}
+                    placeholder={String(payableAmt)}
+                    className="w-full bg-cyan-50 dark:bg-cyan-900/20 text-cyan-700 font-bold text-sm rounded-xl px-3 py-2.5 outline-none border-2 border-cyan-200 dark:border-cyan-800 focus:border-cyan-500"
                   />
                 </div>
               )}
 
               {/* Summary line */}
               <div className="rounded-xl bg-gray-50 dark:bg-gray-800 px-3 py-2 space-y-0.5">
-                {(payMode === 'cash' || payMode === 'cash_card' || payMode === 'cash_debt' || payMode === 'cash_card_debt') && cashAmt > 0 && (
-                  <p className="text-xs text-green-600">💵 Naqd: {formatMoney(payMode === 'cash' ? payableAmt : cashAmt)}</p>
+                {(payMode === 'cash' || payMode === 'cash_card' || payMode === 'cash_debt' || payMode === 'cash_card_debt') && (
+                  <p className="text-xs text-green-600">💵 Naqd: {formatMoney(payMode === 'cash' ? (cashInput ? cashAmt : payableAmt) : cashAmt)}</p>
                 )}
                 {(payMode === 'card' || payMode === 'cash_card' || payMode === 'card_debt' || payMode === 'cash_card_debt') && (
-                  <p className="text-xs text-blue-600">💳 Karta: {formatMoney(payMode === 'card' ? payableAmt : payMode === 'cash_card' ? cardAmt : cardAmt)}</p>
+                  <p className="text-xs text-blue-600">💳 Karta: {formatMoney(payMode === 'card' ? (cardInput ? cardAmt : payableAmt) : cardAmt)}</p>
+                )}
+                {payMode === 'payme' && (
+                  <p className="text-xs text-cyan-600">📱 Payme: {formatMoney(paymeInput ? paymeAmt : payableAmt)}</p>
                 )}
                 {debtAmt > 0 && (
                   <p className="text-xs text-red-500 font-semibold">📋 Qarz: {formatMoney(debtAmt)}</p>

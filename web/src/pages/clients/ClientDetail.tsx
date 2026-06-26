@@ -45,12 +45,14 @@ interface Order {
   total_amount: number
   discount_amount: number
   created_at: string
+  containers_delivered: number
+  containers_returned: number
   items: { product_name: string; quantity: number; price_at_order: number }[]
 }
 
 interface ContainerTx {
   id: string
-  type: string
+  transaction_type: string
   quantity: number
   note: string | null
   created_at: string
@@ -249,7 +251,7 @@ export default function ClientDetail() {
   const fetchContainers = async () => {
     try {
       const { data } = await api.get(`/containers/${id}/history`)
-      setContainers(Array.isArray(data) ? data : [])
+      setContainers(Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [])
     } catch {}
   }
 
@@ -766,6 +768,17 @@ export default function ClientDetail() {
                       <span className="text-gray-600 dark:text-gray-400">{formatMoney(item.price_at_order * item.quantity)}</span>
                     </div>
                   ))}
+                  {order.containers_returned > 0 && (
+                    <div className="flex items-center justify-between text-sm pt-1 border-t border-green-100 dark:border-green-900/30 mt-1">
+                      <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400">
+                        <Package size={13} />
+                        Qaytarilgan tara
+                      </span>
+                      <span className="font-semibold text-green-600 dark:text-green-400">
+                        {order.containers_returned} ta
+                      </span>
+                    </div>
+                  )}
                   {order.discount_amount > 0 && (
                     <div className="flex items-center justify-between text-sm pt-1 border-t border-yellow-100 dark:border-yellow-900/30">
                       <span className="text-yellow-600">Chegirma</span>
@@ -872,17 +885,17 @@ export default function ClientDetail() {
                       <tr key={tx.id} className="border-t border-gray-100 dark:border-gray-800">
                         <td className="table-cell text-xs text-gray-500">{formatDateTime(tx.created_at)}</td>
                         <td className="table-cell">
-                          <span className={`badge ${tx.type === 'delivered' ? 'badge-info' : tx.type === 'returned' ? 'badge-success' : tx.type === 'adjustment' ? 'badge-warning' : 'badge-gray'}`}>
-                            {tx.type === 'delivered' ? 'Yetkazildi' : tx.type === 'returned' ? 'Qaytarildi' : tx.type === 'adjustment' ? 'Tuzatish' : tx.type}
+                          <span className={`badge ${tx.transaction_type === 'delivered' ? 'badge-info' : tx.transaction_type === 'returned' ? 'badge-success' : tx.transaction_type === 'adjustment' ? 'badge-warning' : 'badge-gray'}`}>
+                            {tx.transaction_type === 'delivered' ? 'Yetkazildi' : tx.transaction_type === 'returned' ? 'Qaytarildi' : tx.transaction_type === 'adjustment' ? 'Tuzatish' : tx.transaction_type}
                           </span>
                         </td>
                         <td className="table-cell font-medium">
                           <span className={
-                            tx.type === 'returned' ? 'text-green-500' :
-                            tx.type === 'adjustment' ? (tx.quantity >= 0 ? 'text-green-600' : 'text-red-500') :
+                            tx.transaction_type === 'returned' ? 'text-green-500' :
+                            tx.transaction_type === 'adjustment' ? (tx.quantity >= 0 ? 'text-green-600' : 'text-red-500') :
                             'text-gray-700 dark:text-gray-300'
                           }>
-                            {tx.type === 'returned' || (tx.type === 'adjustment' && tx.quantity > 0) ? '+' : ''}{tx.quantity}
+                            {tx.transaction_type === 'returned' || (tx.transaction_type === 'adjustment' && tx.quantity > 0) ? '+' : ''}{tx.quantity}
                           </span>
                         </td>
                         <td className="table-cell text-gray-500 text-xs">{tx.note ?? '—'}</td>

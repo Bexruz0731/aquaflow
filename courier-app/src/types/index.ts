@@ -62,6 +62,7 @@ export interface CompletedOrder {
   address_text: string
   items: OrderItem[]
   containers_returned: number
+  containers_delivered: number
   cash_amount: number
   card_amount: number
   payme_amount: number

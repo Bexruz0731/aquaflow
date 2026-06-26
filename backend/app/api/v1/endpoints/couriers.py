@@ -692,14 +692,23 @@ async def close_shift(
             orders_completed=0, note=data.note, collection_date=today_dt,
         ))
     else:
+        rem_cash, rem_card, rem_payme = data.actual_cash, data.actual_card, data.actual_payme
         for i, d in enumerate(sorted_dates):
             is_last = (i == len(sorted_dates) - 1)
             grp = date_groups[d]
+            if is_last:
+                d_cash, d_card, d_payme = rem_cash, rem_card, rem_payme
+            else:
+                # Non-last days get their actual order amount (capped by remaining balance)
+                d_cash = min(grp['cash'], rem_cash)
+                d_card = min(grp['card'], rem_card)
+                d_payme = min(grp['payme'], rem_payme)
+                rem_cash -= d_cash; rem_card -= d_card; rem_payme -= d_payme
             col_dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_tz_tashkent)
             db.add(CourierCashCollection(
                 tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
-                cash_amount=grp['cash'], card_amount=grp['card'], payme_amount=grp['payme'],
-                total_amount=grp['cash'] + grp['card'] + grp['payme'],
+                cash_amount=d_cash, card_amount=d_card, payme_amount=d_payme,
+                total_amount=d_cash + d_card + d_payme,
                 full_containers_returned=data.actual_full_containers if is_last else 0,
                 empty_containers_returned=data.actual_empty_containers if is_last else 0,
                 orders_completed=grp['cnt'], note=data.note, collection_date=col_dt,
@@ -958,14 +967,22 @@ async def close_courier_shift_by_operator(
             orders_completed=0, note=data.note, collection_date=today_dt,
         ))
     else:
+        rem_cash, rem_card, rem_payme = data.actual_cash, data.actual_card, data.actual_payme
         for i, d in enumerate(sorted_dates):
             is_last = (i == len(sorted_dates) - 1)
             grp = date_groups[d]
+            if is_last:
+                d_cash, d_card, d_payme = rem_cash, rem_card, rem_payme
+            else:
+                d_cash = min(grp['cash'], rem_cash)
+                d_card = min(grp['card'], rem_card)
+                d_payme = min(grp['payme'], rem_payme)
+                rem_cash -= d_cash; rem_card -= d_card; rem_payme -= d_payme
             col_dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=_tz_tashkent)
             db.add(CourierCashCollection(
                 tenant_id=courier.tenant_id, courier_id=courier.id, collected_by_id=user.id,
-                cash_amount=grp['cash'], card_amount=grp['card'], payme_amount=grp['payme'],
-                total_amount=grp['cash'] + grp['card'] + grp['payme'],
+                cash_amount=d_cash, card_amount=d_card, payme_amount=d_payme,
+                total_amount=d_cash + d_card + d_payme,
                 full_containers_returned=data.actual_full_containers if is_last else 0,
                 empty_containers_returned=data.actual_empty_containers if is_last else 0,
                 orders_completed=grp['cnt'], note=data.note, collection_date=col_dt,

@@ -7,6 +7,7 @@ interface AuthStore {
   profile: CourierProfile | null
   hydrated: boolean
   loginWithTelegram: (initData: string) => Promise<void>
+  loginWithPassword: (phone: string, password: string) => Promise<void>
   fetchProfile: () => Promise<void>
   updateProfile: (patch: Partial<CourierProfile>) => void
   setLanguage: (lang: string) => void
@@ -14,14 +15,22 @@ interface AuthStore {
 }
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  token: localStorage.getItem('access_token'),
+  token: localStorage.getItem('courier_access_token'),
   profile: null,
   hydrated: false,
 
   loginWithTelegram: async (initData: string) => {
     const { data } = await api.post('/auth/telegram/verify', { init_data: initData })
-    localStorage.setItem('access_token', data.access_token)
-    localStorage.setItem('refresh_token', data.refresh_token)
+    localStorage.setItem('courier_access_token', data.access_token)
+    localStorage.setItem('courier_refresh_token', data.refresh_token)
+    set({ token: data.access_token })
+    await get().fetchProfile()
+  },
+
+  loginWithPassword: async (phone: string, password: string) => {
+    const { data } = await api.post('/auth/login', { login: phone, password })
+    localStorage.setItem('courier_access_token', data.access_token)
+    localStorage.setItem('courier_refresh_token', data.refresh_token)
     set({ token: data.access_token })
     await get().fetchProfile()
   },
@@ -41,7 +50,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: () => {
-    localStorage.clear()
+    localStorage.removeItem('courier_access_token')
+    localStorage.removeItem('courier_refresh_token')
     set({ token: null, profile: null, hydrated: false })
   },
 }))

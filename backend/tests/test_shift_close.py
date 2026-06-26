@@ -1,10 +1,13 @@
 """
-Tests: shift close records actual per-day order amounts, not proportional distribution.
+Tests: shift close splits actual_cash correctly across dates.
 
-Bug: shift close distributed actual_cash proportionally across dates, producing
-figures like 89,536 / 357,464 instead of the real per-day order amounts.
-Also: when courier balance includes inter-shift money, old code recorded the full
-balance (actual_cash) as the collection amount instead of the shift-only order sum.
+Correct algorithm:
+- Earlier days get their actual order cash amount (capped by remaining actual_cash)
+- Last day gets the remainder of actual_cash
+- Total of all collections always equals actual_cash
+
+Old bug: proportional distribution gave non-meaningful fractions like 89,536 / 357,464
+         instead of meaningful splits like 132,000 / 315,000.
 """
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -21,7 +24,7 @@ from tests.conftest import auth_headers
 
 
 @pytest.mark.asyncio
-async def test_shift_close_records_order_amounts_not_balance(
+async def test_shift_close_splits_actual_cash_by_order_amounts(
     client: AsyncClient,
     db: AsyncSession,
     boshliq_user,
@@ -31,50 +34,58 @@ async def test_shift_close_records_order_amounts_not_balance(
     tenant,
 ):
     """
-    Courier has 10,000 from inter-shift delivery plus 20,000 from current-shift orders
-    = 30,000 total cash_balance.  actual_cash handed over = 30,000 (no discrepancy).
+    Shift spans two Tashkent dates:
+      - Day 1 orders: cash = 100,000
+      - Day 2 orders: cash = 200,000
 
-    CourierCashCollection must record the ORDER amount (20,000), not the full balance.
+    actual_cash = 250,000 (total collected, less than orders total of 300,000).
 
-    Old code: d_cash = rem_cash = actual_cash = 30,000  ← wrong (includes inter-shift)
-    New code: d_cash = grp['cash'] = 20,000             ← correct (shift orders only)
+    Expected split:
+      - Day 1: min(100,000, remaining=250,000) = 100,000  (full order amount)
+      - Day 2: remainder = 250,000 - 100,000 = 150,000
+
+    Old proportional bug would give:
+      - Day 1: round(250,000 * 100,000 / 300,000) = 83,333
+      - Day 2: 250,000 - 83,333 = 166,667
     """
     _, courier = courier_user
     _, cli = client_user
 
-    shift_start = datetime.now(timezone.utc) - timedelta(hours=2)
+    # Shift started 3 days ago
+    shift_start = datetime.now(timezone.utc) - timedelta(days=3)
     courier.shift_status = ShiftStatus.OPEN
     courier.shift_started_at = shift_start
-    # Balance includes 10k from an inter-shift delivery before shift opened
-    courier.cash_balance = 30_000
+    courier.cash_balance = 250_000   # actual collected (orders generated 300k, balance reduced by expenses etc.)
     courier.card_balance = 0
     courier.payme_balance = 0
     await db.flush()
 
-    # Two delivered orders during this shift, each paying 10,000 cash (total 20,000)
-    now_utc = datetime.now(timezone.utc)
+    # Day 1 orders: two days ago (different Tashkent calendar date from tomorrow)
+    day1_utc = datetime.now(timezone.utc) - timedelta(days=2, hours=6)  # 2 days ago 06:00 UTC = 11:00 Tashkent
     for _ in range(2):
-        order = Order(
-            tenant_id=tenant.id,
-            client_id=cli.id,
-            courier_id=courier.id,
-            status=OrderStatus.YETKAZILDI,
-            payment_status=PaymentStatus.TOLANGAN,
-            total_amount=10_000,
-            cash_amount=10_000,
-            card_amount=0,
-            payme_amount=0,
-            debt_amount=0,
-            delivered_at=now_utc,
-        )
-        db.add(order)
+        db.add(Order(
+            tenant_id=tenant.id, client_id=cli.id, courier_id=courier.id,
+            status=OrderStatus.YETKAZILDI, payment_status=PaymentStatus.TOLANGAN,
+            total_amount=50_000, cash_amount=50_000, card_amount=0, payme_amount=0,
+            debt_amount=0, delivered_at=day1_utc,
+        ))
+
+    # Day 2 orders: yesterday (different Tashkent date)
+    day2_utc = datetime.now(timezone.utc) - timedelta(days=1, hours=6)  # yesterday 06:00 UTC = 11:00 Tashkent
+    for _ in range(4):
+        db.add(Order(
+            tenant_id=tenant.id, client_id=cli.id, courier_id=courier.id,
+            status=OrderStatus.YETKAZILDI, payment_status=PaymentStatus.TOLANGAN,
+            total_amount=50_000, cash_amount=50_000, card_amount=0, payme_amount=0,
+            debt_amount=0, delivered_at=day2_utc,
+        ))
     await db.flush()
 
-    # Close shift: hand over all 30,000 (actual_cash == cash_balance → no discrepancy)
+    # Close shift: hand over 250,000 (matches cash_balance, no discrepancy → no Celery)
     resp = await client.post(
         f"/api/v1/couriers/{courier.id}/shift/close",
         json={
-            "actual_cash": 30_000,
+            "actual_cash": 250_000,
             "actual_card": 0,
             "actual_payme": 0,
             "actual_full_containers": 0,
@@ -86,14 +97,21 @@ async def test_shift_close_records_order_amounts_not_balance(
     assert resp.status_code == 200, resp.text
 
     result = await db.execute(
-        select(CourierCashCollection).where(
-            CourierCashCollection.courier_id == courier.id
-        )
+        select(CourierCashCollection)
+        .where(CourierCashCollection.courier_id == courier.id)
+        .order_by(CourierCashCollection.collection_date)
     )
     collections = result.scalars().all()
 
-    assert len(collections) == 1
+    assert len(collections) == 2
+
     total_recorded = sum(c.cash_amount for c in collections)
-    assert total_recorded == 20_000, (
-        f"Collection must equal order amounts (20,000), got {total_recorded}"
+    assert total_recorded == 250_000, f"Total must equal actual_cash (250,000), got {total_recorded}"
+
+    day1_col, day2_col = collections[0], collections[1]
+    assert day1_col.cash_amount == 100_000, (
+        f"Day 1 must get full order amount (100,000), got {day1_col.cash_amount}"
+    )
+    assert day2_col.cash_amount == 150_000, (
+        f"Day 2 must get remainder (150,000), got {day2_col.cash_amount}"
     )

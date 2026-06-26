@@ -40,7 +40,24 @@ async def container_history(
         query.order_by(ContainerTransaction.created_at.desc())
         .offset((page - 1) * per_page).limit(per_page)
     )
-    return {"items": result.scalars().all(), "total": total, "page": page}
+    rows = result.scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(tx.id),
+                "transaction_type": tx.transaction_type,
+                "quantity": tx.quantity,
+                "balance_before": tx.balance_before,
+                "balance_after": tx.balance_after,
+                "note": tx.note,
+                "created_at": tx.created_at.isoformat(),
+                "order_id": tx.order_id,
+            }
+            for tx in rows
+        ],
+        "total": total,
+        "page": page,
+    }
 
 
 @router.post("/{client_id}/adjust")

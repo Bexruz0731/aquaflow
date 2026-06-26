@@ -1,11 +1,11 @@
 from typing import Optional, List
 from uuid import UUID
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, timedelta, date
 
 from pydantic import BaseModel, Field as PydanticField
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, update
+from sqlalchemy import select, func, or_, update, case
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 
@@ -16,7 +16,8 @@ from app.models.user import User, UserRole
 from app.models.order import Order, OrderItem, OrderStatusHistory, OrderStatus, PaymentStatus, PaymentMethod
 from app.models.client import Client, ClientAddress, ClientGroup
 from app.models.product import Product
-from app.models.courier import Courier, CourierInventory
+from app.models.courier import Courier, CourierInventory, ShiftStatus
+from app.models.finance import ContainerClientBalance, ContainerTransaction, Debt
 from app.models.warehouse import WarehouseItem, WarehouseStock, WarehouseTransaction, WarehouseTransactionType
 from app.schemas.order import (
     OrderCreate, OrderResponse, AssignCourierRequest,
@@ -59,6 +60,7 @@ async def _enrich_order(order: Order, db: AsyncSession) -> dict:
         "created_at": order.created_at.isoformat(),
         "completed_at": order.delivered_at.isoformat() if order.delivered_at else None,
         "containers_returned": order.containers_returned,
+        "containers_delivered": order.containers_delivered,
         "is_walkin": order.is_walkin,
         "walkin_phone": order.walkin_phone,
         "walkin_address": order.walkin_address,
@@ -325,7 +327,11 @@ async def list_orders(
         query = query.where(Order.created_at <= datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    query = query.order_by(Order.created_at.desc()).offset((page - 1) * per_page).limit(per_page).options(
+    unassigned_first = case(
+        (Order.status.in_([OrderStatus.YANGI, OrderStatus.QABUL_QILINDI]), 0),
+        else_=1,
+    )
+    query = query.order_by(unassigned_first, Order.created_at.desc()).offset((page - 1) * per_page).limit(per_page).options(
         selectinload(Order.items).selectinload(OrderItem.product),
         selectinload(Order.address),
         selectinload(Order.client),
@@ -342,6 +348,7 @@ async def list_orders(
             d["address_text"] = o.walkin_address
         if o.client:
             d["client_phone"] = o.client.phone
+            d["client_debt"] = o.client.debt_amount
         d["client_name"] = d.get("address_text") or d.get("client_phone") or d.get("walkin_phone") or "—"
         if o.courier and o.courier.user:
             d["courier_name"] = f"{o.courier.user.first_name} {o.courier.user.last_name or ''}".strip()
@@ -406,16 +413,22 @@ async def get_courier_active_orders(
         select(Order).where(
             Order.courier_id == courier.id,
             Order.status.in_([OrderStatus.TAYINLANDI, OrderStatus.YOLDA]),
+            Order.is_deleted == False,
         ).order_by(Order.created_at)
     )
     active_orders = active_result.scalars().all()
     enriched_orders = [await _enrich_order(o, db) for o in active_orders]
 
-    today = datetime.now(timezone.utc).date()
+    _TASHKENT = timezone(timedelta(hours=5))
+    _today = datetime.now(_TASHKENT).date()
+    today_start_dt = datetime(_today.year, _today.month, _today.day, tzinfo=_TASHKENT)
+    today_end_dt = datetime(_today.year, _today.month, _today.day, 23, 59, 59, tzinfo=_TASHKENT)
+
     today_result = await db.execute(
         select(func.count()).where(
             Order.courier_id == courier.id,
-            func.date(Order.created_at) == today,
+            Order.created_at >= today_start_dt,
+            Order.created_at <= today_end_dt,
         )
     )
     today_total = today_result.scalar_one() or 0
@@ -424,7 +437,8 @@ async def get_courier_active_orders(
         select(func.count()).where(
             Order.courier_id == courier.id,
             Order.status == OrderStatus.YETKAZILDI,
-            func.date(Order.created_at) == today,
+            Order.delivered_at >= today_start_dt,
+            Order.delivered_at <= today_end_dt,
         )
     )
     today_delivered = delivered_result.scalar_one() or 0
@@ -790,6 +804,7 @@ async def create_walkin_order(
         old_balance = cb.balance
         cb.balance = cb.balance + returnable_delivered - walkin_containers_returned
         order.containers_delivered = returnable_delivered
+        order.containers_returned = walkin_containers_returned
 
         client_locked_r = await db.execute(select(Client).where(Client.id == client.id).with_for_update())
         client_locked = client_locked_r.scalar_one_or_none()
@@ -852,22 +867,45 @@ async def create_walkin_order(
                     note=f"Tez sotuv #{order.id} - mijoz pust tara qaytardi",
                 ))
 
-    # ── 10. Handle debt ───────────────────────────────────────────────────
+    # ── 10. Handle debt — apply client advance first ──────────────────────
     if debt_amt > 0:
+        from app.models.finance import DebtTransaction, DebtTransactionType
         client_upd = await db.execute(
             select(Client).where(Client.id == client.id).with_for_update()
         )
         client_locked = client_upd.scalar_one_or_none()
-        if client_locked:
-            client_locked.debt_amount += debt_amt
-        db.add(Debt(
-            tenant_id=user.tenant_id,
-            client_id=client.id,
-            order_id=order.id,
-            original_amount=debt_amt,
-            remaining_amount=debt_amt,
-            is_paid=False,
-        ))
+        if client_locked and client_locked.advance_amount > 0:
+            advance_apply = min(client_locked.advance_amount, debt_amt)
+            client_locked.advance_amount -= advance_apply
+            debt_amt -= advance_apply
+            order.advance_used = advance_apply
+            order.paid_amount += advance_apply
+            order.debt_amount = debt_amt
+            if debt_amt == 0:
+                order.payment_status = PaymentStatus.TOLANGAN
+                if order.payment_method == PaymentMethod.QARZ:
+                    order.payment_method = PaymentMethod.NAQD
+            else:
+                order.payment_status = PaymentStatus.QISMAN
+            db.add(DebtTransaction(
+                tenant_id=user.tenant_id,
+                client_id=client.id,
+                order_id=order.id,
+                transaction_type=DebtTransactionType.ADVANCE_USED,
+                amount=-advance_apply,
+                description=f"Avans ishlatildi — tez sotuv #{order.id}",
+            ))
+        if debt_amt > 0:
+            if client_locked:
+                client_locked.debt_amount += debt_amt
+            db.add(Debt(
+                tenant_id=user.tenant_id,
+                client_id=client.id,
+                order_id=order.id,
+                original_amount=debt_amt,
+                remaining_amount=debt_amt,
+                is_paid=False,
+            ))
 
     # ── 11. Update courier balances ───────────────────────────────────────
     courier_upd_result = await db.execute(

@@ -98,8 +98,8 @@ async def weekly_stats(
         Order.status == OrderStatus.YETKAZILDI,
     )
 
-    # Group by date in Tashkent timezone
-    day_expr = func.date(Order.created_at.op("AT TIME ZONE")("Asia/Tashkent"))
+    # Group by delivery date in Tashkent timezone
+    day_expr = func.date(Order.delivered_at.op("AT TIME ZONE")("Asia/Tashkent"))
 
     if period == "weekly":
         points = [(now - timedelta(days=i)).date() for i in range(6, -1, -1)]
@@ -110,7 +110,7 @@ async def weekly_stats(
                 func.sum(Order.total_amount - Order.discount_amount).label("revenue"),
                 func.count(Order.id).label("count"),
             )
-            .where(base_where, Order.created_at >= since)
+            .where(base_where, Order.delivered_at >= since)
             .group_by(day_expr)
         )
         rows = {str(r.day): {"revenue": r.revenue or 0, "count": r.count} for r in result.all()}
@@ -125,7 +125,7 @@ async def weekly_stats(
                 func.sum(Order.total_amount - Order.discount_amount).label("revenue"),
                 func.count(Order.id).label("count"),
             )
-            .where(base_where, Order.created_at >= since)
+            .where(base_where, Order.delivered_at >= since)
             .group_by(day_expr)
         )
         rows = {str(r.day): {"revenue": r.revenue or 0, "count": r.count} for r in result.all()}
@@ -143,14 +143,14 @@ async def weekly_stats(
             points.append(date_cls(year, month, 1))
 
         start_point = points[0]
-        month_label = func.to_char(Order.created_at.op("AT TIME ZONE")("Asia/Tashkent"), "YYYY-MM")
+        month_label = func.to_char(Order.delivered_at.op("AT TIME ZONE")("Asia/Tashkent"), "YYYY-MM")
         result = await db.execute(
             select(
                 month_label.label("month"),
                 func.sum(Order.total_amount - Order.discount_amount).label("revenue"),
                 func.count(Order.id).label("count"),
             )
-            .where(base_where, Order.created_at >= datetime(start_point.year, start_point.month, 1, tzinfo=TASHKENT))
+            .where(base_where, Order.delivered_at >= datetime(start_point.year, start_point.month, 1, tzinfo=TASHKENT))
             .group_by(month_label)
         )
         rows = {r.month: {"revenue": r.revenue or 0, "count": r.count} for r in result.all()}
@@ -209,9 +209,9 @@ async def statistics(
     base = and_(Order.tenant_id == user.tenant_id, Order.is_deleted == False, Order.created_at >= start, Order.created_at <= end)
 
     def rev_query(start_dt, end_dt=None):
-        cond = and_(delivered, Order.created_at >= start_dt)
+        cond = and_(delivered, Order.delivered_at >= start_dt)
         if end_dt:
-            cond = and_(cond, Order.created_at <= end_dt)
+            cond = and_(cond, Order.delivered_at <= end_dt)
         return select(func.coalesce(func.sum(Order.total_amount - Order.discount_amount), 0)).where(cond)
 
     revenue_today = (await db.execute(rev_query(today_start))).scalar_one() or 0
@@ -289,12 +289,12 @@ async def financial_dashboard(
 
     period_revenue = (await db.execute(
         select(func.coalesce(func.sum(Order.total_amount - Order.discount_amount), 0))
-        .where(delivered, Order.created_at >= period_start, Order.created_at <= period_end)
+        .where(delivered, Order.delivered_at >= period_start, Order.delivered_at <= period_end)
     )).scalar_one()
 
     today_revenue = (await db.execute(
         select(func.coalesce(func.sum(Order.total_amount - Order.discount_amount), 0))
-        .where(delivered, Order.created_at >= today_start)
+        .where(delivered, Order.delivered_at >= today_start)
     )).scalar_one()
 
     cash_collected = (await db.execute(
@@ -307,32 +307,32 @@ async def financial_dashboard(
 
     period_cash = (await db.execute(
         select(func.coalesce(func.sum(Order.cash_amount), 0))
-        .where(delivered, Order.created_at >= period_start, Order.created_at <= period_end)
+        .where(delivered, Order.delivered_at >= period_start, Order.delivered_at <= period_end)
     )).scalar_one()
 
     period_card = (await db.execute(
         select(func.coalesce(func.sum(Order.card_amount), 0))
-        .where(delivered, Order.created_at >= period_start, Order.created_at <= period_end)
+        .where(delivered, Order.delivered_at >= period_start, Order.delivered_at <= period_end)
     )).scalar_one()
 
     period_payme = (await db.execute(
         select(func.coalesce(func.sum(Order.payme_amount), 0))
-        .where(delivered, Order.created_at >= period_start, Order.created_at <= period_end)
+        .where(delivered, Order.delivered_at >= period_start, Order.delivered_at <= period_end)
     )).scalar_one()
 
     period_debts = (await db.execute(
         select(func.coalesce(func.sum(Order.debt_amount), 0))
-        .where(not_deleted, Order.created_at >= period_start, Order.created_at <= period_end)
+        .where(delivered, Order.delivered_at >= period_start, Order.delivered_at <= period_end)
     )).scalar_one()
 
     today_cash = (await db.execute(
         select(func.coalesce(func.sum(Order.cash_amount), 0))
-        .where(delivered, Order.created_at >= today_start)
+        .where(delivered, Order.delivered_at >= today_start)
     )).scalar_one()
 
     today_card = (await db.execute(
         select(func.coalesce(func.sum(Order.card_amount), 0))
-        .where(delivered, Order.created_at >= today_start)
+        .where(delivered, Order.delivered_at >= today_start)
     )).scalar_one()
 
     payme_collected = (await db.execute(
@@ -341,12 +341,12 @@ async def financial_dashboard(
 
     today_payme = (await db.execute(
         select(func.coalesce(func.sum(Order.payme_amount), 0))
-        .where(delivered, Order.created_at >= today_start)
+        .where(delivered, Order.delivered_at >= today_start)
     )).scalar_one()
 
     today_debts = (await db.execute(
         select(func.coalesce(func.sum(Order.debt_amount), 0))
-        .where(not_deleted, Order.created_at >= today_start)
+        .where(delivered, Order.delivered_at >= today_start)
     )).scalar_one()
 
     total_debts = (await db.execute(
@@ -382,7 +382,8 @@ async def financial_dashboard(
 
     # Courier expenses for the period
     from app.models.courier import CourierExpense
-    from app.models.finance import AdminExpense, CourierCashCollection
+    from app.models.finance import AdminExpense, CourierCashCollection, OperatorCashSubmission
+    from app.models.user import UserRole as _UserRole
 
     period_courier_expenses = (await db.execute(
         select(func.coalesce(func.sum(CourierExpense.amount), 0))
@@ -432,6 +433,49 @@ async def financial_dashboard(
 
     period_expenses_total = period_courier_expenses + period_admin_expenses
 
+    # Operator current cash balances (not yet collected by boss)
+    op_users_result = await db.execute(
+        select(User)
+        .where(
+            User.tenant_id == user.tenant_id,
+            User.role == _UserRole.OPERATOR,
+            User.is_active == True,
+        )
+    )
+    op_users = op_users_result.scalars().all()
+    operator_cash_total = sum(u.cash_balance or 0 for u in op_users)
+    operator_card_total = sum(u.card_balance or 0 for u in op_users)
+    operator_balances = [
+        {
+            "user_id": str(u.id),
+            "name": f"{u.first_name} {u.last_name or ''}".strip(),
+            "cash_balance": u.cash_balance or 0,
+            "card_balance": u.card_balance or 0,
+            "total_balance": (u.cash_balance or 0) + (u.card_balance or 0),
+        }
+        for u in op_users
+        if (u.cash_balance or 0) + (u.card_balance or 0) > 0
+    ]
+
+    # Operator submissions in the period (boss collected cash from operators)
+    op_sub_cash = (await db.execute(
+        select(func.coalesce(func.sum(OperatorCashSubmission.cash_amount), 0))
+        .where(
+            OperatorCashSubmission.tenant_id == user.tenant_id,
+            OperatorCashSubmission.submission_date >= period_start,
+            OperatorCashSubmission.submission_date <= period_end,
+        )
+    )).scalar_one()
+
+    op_sub_card = (await db.execute(
+        select(func.coalesce(func.sum(OperatorCashSubmission.card_amount), 0))
+        .where(
+            OperatorCashSubmission.tenant_id == user.tenant_id,
+            OperatorCashSubmission.submission_date >= period_start,
+            OperatorCashSubmission.submission_date <= period_end,
+        )
+    )).scalar_one()
+
     return {
         "date_from": period_start_date.isoformat(),
         "date_to": period_end_date.isoformat(),
@@ -461,8 +505,14 @@ async def financial_dashboard(
         "courier_payme": courier_payme_total,
         "courier_total": courier_cash_total + courier_card_total + courier_payme_total,
         "courier_balances": courier_balances,
-        "cash_register_cash": cash_register_cash,
-        "cash_register_card": cash_register_card,
+        # Kassada = courier shift-close collections + boss-collected operator submissions
+        "cash_register_cash": cash_register_cash + op_sub_cash,
+        "cash_register_card": cash_register_card + op_sub_card,
         "cash_register_payme": cash_register_payme,
-        "cash_register_total": cash_register_cash + cash_register_card + cash_register_payme,
+        "cash_register_total": cash_register_cash + op_sub_cash + cash_register_card + op_sub_card + cash_register_payme,
+        # Operator current balances (not yet submitted)
+        "operator_cash": operator_cash_total,
+        "operator_card": operator_card_total,
+        "operator_total": operator_cash_total + operator_card_total,
+        "operator_balances": operator_balances,
     }

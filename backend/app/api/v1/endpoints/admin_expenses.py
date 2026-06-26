@@ -96,6 +96,7 @@ async def list_admin_expenses(
             "amount": ce.amount,
             "payment_method": ce.payment_method.upper() if ce.payment_method else "NAQD",
             "note": None,
+            "courier_id": str(ce.courier_id),
             "courier_name": f"{u.first_name} {u.last_name or ''}".strip(),
             "created_at": ce.created_at.isoformat(),
         }

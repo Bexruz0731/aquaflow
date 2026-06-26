@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { DollarSign, TrendingUp, AlertCircle, CreditCard, UserCheck, Calendar } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { DollarSign, TrendingUp, AlertCircle, CreditCard, UserCheck, Calendar, HandCoins } from 'lucide-react'
 import { formatMoney } from '@/utils/format'
 import api from '@/api/client'
 import { useState } from 'react'
@@ -55,6 +55,28 @@ export default function Finance() {
   }
 
   const dateRange = getDateRange()
+  const queryClient = useQueryClient()
+  const [collectingId, setCollectingId] = useState<string | null>(null)
+
+  const collectMutation = useMutation({
+    mutationFn: (operatorId: string) =>
+      api.post(`/operator/${operatorId}/collect-cash`, { note: null }).then(r => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['financial-dashboard'] })
+      alert(`✅ Yig'ildi: ${data.operator_name}\nNaqd: ${formatMoney(data.collected_cash)}\nKarta: ${formatMoney(data.collected_card)}`)
+      setCollectingId(null)
+    },
+    onError: (err: any) => {
+      alert(`Xatolik: ${err?.response?.data?.detail || err.message}`)
+      setCollectingId(null)
+    },
+  })
+
+  const handleCollect = (operatorId: string, name: string, total: number) => {
+    if (!window.confirm(`${name} dan ${formatMoney(total)} yig'ib olasizmi?`)) return
+    setCollectingId(operatorId)
+    collectMutation.mutate(operatorId)
+  }
 
   const { data: financial, isLoading } = useQuery({
     queryKey: ['financial-dashboard', dateRange.date_from, dateRange.date_to],
@@ -351,7 +373,7 @@ export default function Finance() {
         </div>
       </div>
 
-      {/* Courier balances & Cash register */}
+      {/* Courier balances & Operator balances */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Couriers money */}
         <div className="card">
@@ -411,44 +433,109 @@ export default function Finance() {
           )}
         </div>
 
-        {/* Cash register */}
+        {/* Operator balances (debt payments not yet submitted to boss) */}
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Kassada (topshirilgan)</h3>
-            <span className="badge badge-success">Qabul qilingan</span>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Operatorlardagi pul</h3>
+            <span className="badge badge-warning">Hali topshirilmagan</span>
           </div>
 
-          <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+          <div className="space-y-3 mb-4">
+            <div className="flex items-center justify-between p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">Naqd pul</p>
-                <p className="text-xs text-gray-500">Smena yopishda topshirilgan</p>
+                <p className="text-xs text-gray-500">Operatorlarda (qarz to'lovlari)</p>
               </div>
-              <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_cash || 0)}</span>
+              <span className="text-lg font-bold text-orange-600">{formatMoney(financial?.operator_cash || 0)}</span>
             </div>
 
-            <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+            <div className="flex items-center justify-between p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">Karta</p>
-                <p className="text-xs text-gray-500">Smena yopishda topshirilgan</p>
+                <p className="text-xs text-gray-500">Operatorlarda</p>
               </div>
-              <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_card || 0)}</span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
-              <div>
-                <p className="text-sm font-medium text-gray-900 dark:text-white">Payme/Click</p>
-                <p className="text-xs text-gray-500">Smena yopishda topshirilgan</p>
-              </div>
-              <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_payme || 0)}</span>
+              <span className="text-lg font-bold text-orange-600">{formatMoney(financial?.operator_card || 0)}</span>
             </div>
 
             <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Jami kassada</span>
-                <span className="text-xl font-bold text-green-600">{formatMoney(financial?.cash_register_total || 0)}</span>
+                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Jami operatorlarda</span>
+                <span className="text-xl font-bold text-orange-600">{formatMoney(financial?.operator_total || 0)}</span>
               </div>
             </div>
+          </div>
+
+          {financial?.operator_balances && financial.operator_balances.length > 0 && (
+            <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+              <p className="text-xs font-medium text-gray-500 mb-3">Operator bo'yicha:</p>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {financial.operator_balances.map((ob: any) => (
+                  <div key={ob.user_id} className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <UserCheck size={16} className="text-gray-400" />
+                      <div>
+                        <span className="text-gray-700 dark:text-gray-300 font-medium">{ob.name || `Operator #${ob.user_id.slice(0, 8)}`}</span>
+                        <div className="text-xs text-gray-400">
+                          Naqd: {formatMoney(ob.cash_balance)} · Karta: {formatMoney(ob.card_balance)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-orange-600">{formatMoney(ob.total_balance)}</span>
+                      <button
+                        onClick={() => handleCollect(ob.user_id, ob.name, ob.total_balance)}
+                        disabled={collectingId === ob.user_id}
+                        className="flex items-center gap-1 px-2 py-1 text-xs bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg transition-colors"
+                      >
+                        <HandCoins size={13} />
+                        {collectingId === ob.user_id ? '...' : "Yig'ish"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Cash register */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Kassada (topshirilgan)</h3>
+          <span className="badge badge-success">Qabul qilingan</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">Naqd pul</p>
+              <p className="text-xs text-gray-500">Smena/operator topshirgan</p>
+            </div>
+            <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_cash || 0)}</span>
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">Karta</p>
+              <p className="text-xs text-gray-500">Smena/operator topshirgan</p>
+            </div>
+            <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_card || 0)}</span>
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">Payme/Click</p>
+              <p className="text-xs text-gray-500">Smena yopishda topshirilgan</p>
+            </div>
+            <span className="text-lg font-bold text-green-600">{formatMoney(financial?.cash_register_payme || 0)}</span>
+          </div>
+        </div>
+
+        <div className="pt-4 mt-2 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Jami kassada</span>
+            <span className="text-2xl font-bold text-green-600">{formatMoney(financial?.cash_register_total || 0)}</span>
           </div>
         </div>
       </div>
@@ -472,7 +559,7 @@ export default function Finance() {
         </div>
         <div className="mt-4 pt-4 border-t border-white/20 text-sm opacity-90">
           <p>✅ To'langan + Qarzlar = {formatMoney((financial?.total_collected || 0) + (financial?.total_debts || 0))}</p>
-          <p className="mt-1">📊 Kuryerlarda: {formatMoney(financial?.courier_total || 0)} | Kassada: {formatMoney(financial?.cash_register_total || 0)}</p>
+          <p className="mt-1">📊 Kuryerlarda: {formatMoney(financial?.courier_total || 0)} | Operatorlarda: {formatMoney(financial?.operator_total || 0)} | Kassada: {formatMoney(financial?.cash_register_total || 0)}</p>
         </div>
       </div>
     </div>

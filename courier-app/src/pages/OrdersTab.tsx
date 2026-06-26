@@ -124,7 +124,14 @@ export default function OrdersTab({ onOpenMap }: Props) {
                       <span className="text-xs text-gray-400">{formatTime(order.created_at)}</span>
                     </div>
                     <p className="font-semibold text-sm text-gray-800 dark:text-white">{order.client_name}</p>
-                    <p className="text-sm font-bold text-blue-600">{formatMoney(order.total_amount)}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-bold text-blue-600">{formatMoney(order.total_amount)}</p>
+                      {order.client_debt > 0 && (
+                        <span className="text-xs font-bold text-red-500 bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded-full">
+                          Qarz: {formatMoney(order.client_debt)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <button
                     onClick={() => {/* open detail */}}

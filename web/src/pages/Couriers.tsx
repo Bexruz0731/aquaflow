@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import {
   DollarSign, Package,
-  ArrowLeft, Phone, Car, Plus, X, PackagePlus, Trash2, CalendarDays, ChevronRight,
+  ArrowLeft, Phone, Car, Plus, X, PackagePlus, Trash2, CalendarDays, ChevronRight, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import api from '@/api/client'
 import { formatMoney, formatPhone, getInitials, getAvatarColor, formatDateTime, formatDate } from '@/utils/format'
 import { useToastStore } from '@/store/toast'
+import { useAuthStore } from '@/store/auth'
 
 interface Courier {
   id: string
@@ -460,6 +461,8 @@ interface DebtTx {
 function CourierDetail() {
   const navigate = useNavigate()
   const toast = useToastStore()
+  const { user: authUser } = useAuthStore()
+  const canDeleteExpense = authUser?.role === 'operator' || authUser?.role === 'boshliq' || authUser?.role === 'super_admin'
   const [courier, setCourier] = useState<Courier | null>(null)
   const [loading, setLoading] = useState(true)
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false)
@@ -475,6 +478,8 @@ function CourierDetail() {
   const [expenses, setExpenses] = useState<{ id: string; title: string; amount: number; payment_method: string; created_at: string }[]>([])
   const [expensesLoading, setExpensesLoading] = useState(false)
   const [showExpenseModal, setShowExpenseModal] = useState(false)
+  const [deleteExpenseTarget, setDeleteExpenseTarget] = useState<{ id: string; title: string; amount: number } | null>(null)
+  const [deletingExpense, setDeletingExpense] = useState(false)
   const [expenseForm, setExpenseForm] = useState({ title: '', amount: '', payment_method: 'naqd' })
   const [expenseSaving, setExpenseSaving] = useState(false)
   const [debtSummary, setDebtSummary] = useState<DebtDaySummary[]>([])
@@ -482,6 +487,15 @@ function CourierDetail() {
   const [selectedDebtDate, setSelectedDebtDate] = useState<string | null>(null)
   const [debtDayDetail, setDebtDayDetail] = useState<{ debts: DebtTx[]; payments: DebtTx[] } | null>(null)
   const [debtDayLoading, setDebtDayLoading] = useState(false)
+  const [showSetPasswordModal, setShowSetPasswordModal] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [dailyOpen, setDailyOpen] = useState(false)
+  const [dailyPage, setDailyPage] = useState(0)
+  const [expensesOpen, setExpensesOpen] = useState(false)
+  const [expensesPage, setExpensesPage] = useState(0)
+  const [debtOpen, setDebtOpen] = useState(false)
+  const [debtPage, setDebtPage] = useState(0)
 
   // Get id from URL
   const id = window.location.pathname.split('/').at(-1) ?? ''
@@ -497,7 +511,7 @@ function CourierDetail() {
 
   const loadDailySummary = () => {
     setDailyLoading(true)
-    api.get(`/couriers/${id}/daily-summary`, { params: { days: 30 } })
+    api.get(`/couriers/${id}/daily-summary`, { params: { days: 90 } })
       .then(({ data }) => setDailySummary(data))
       .catch(() => {})
       .finally(() => setDailyLoading(false))
@@ -536,19 +550,24 @@ function CourierDetail() {
     }
   }
 
-  const handleDeleteExpense = async (expenseId: string) => {
+  const handleDeleteExpense = async () => {
+    if (!deleteExpenseTarget) return
+    setDeletingExpense(true)
     try {
-      await api.delete(`/couriers/${id}/expenses/${expenseId}`)
-      setExpenses(prev => prev.filter(e => e.id !== expenseId))
-      toast.success('O\'chirildi')
+      await api.delete(`/couriers/${id}/expenses/${deleteExpenseTarget.id}`)
+      setExpenses(prev => prev.filter(e => e.id !== deleteExpenseTarget.id))
+      toast.success('Xarajat o\'chirildi')
+      setDeleteExpenseTarget(null)
     } catch {
       toast.error('Xatolik')
+    } finally {
+      setDeletingExpense(false)
     }
   }
 
   const loadDebtSummary = () => {
     setDebtSummaryLoading(true)
-    api.get(`/couriers/${id}/debt-summary`, { params: { days: 30 } })
+    api.get(`/couriers/${id}/debt-summary`, { params: { days: 90 } })
       .then(({ data }) => setDebtSummary(data))
       .catch(() => {})
       .finally(() => setDebtSummaryLoading(false))
@@ -606,6 +625,12 @@ function CourierDetail() {
                 Smena ochish
               </button>
             )}
+            <button
+              onClick={() => { setNewPassword(''); setShowSetPasswordModal(true) }}
+              className="btn text-sm border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+            >
+              Parol o'rnatish
+            </button>
           </div>
         </div>
 
@@ -674,173 +699,283 @@ function CourierDetail() {
 
       {/* Daily History Section */}
       <div className="card">
-        <div className="flex items-center gap-2 mb-4">
-          <CalendarDays size={18} className="text-blue-500" />
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Kunlik hisobot</h3>
-          <span className="text-xs text-gray-400 ml-auto">so'nggi 30 kun</span>
-        </div>
+        <button
+          onClick={() => setDailyOpen(o => !o)}
+          className="w-full flex items-center gap-2 text-left bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl px-3 py-2.5 transition-colors"
+        >
+          <CalendarDays size={16} className="text-blue-500 shrink-0" />
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex-1">Kunlik hisobot</h3>
+          {dailySummary.length > 0 && (
+            <span className="text-xs text-gray-400">{dailySummary.length} kun</span>
+          )}
+          {dailyOpen ? <ChevronUp size={15} className="text-gray-500 shrink-0" /> : <ChevronDown size={15} className="text-gray-500 shrink-0" />}
+        </button>
 
-        {dailyLoading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-10 bg-gray-100 dark:bg-gray-700 rounded-lg animate-pulse" />
-            ))}
-          </div>
-        ) : dailySummary.length === 0 ? (
-          <div className="text-center py-8 text-gray-400 text-sm">Ma'lumot yo'q</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-700">
-                  <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Buyurtma</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Yetkazildi</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Qaytarildi</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Naqd</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Karta</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Payme</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Avans</th>
-                  <th className="text-right py-2 px-3 text-xs font-medium text-gray-500">Jami</th>
-                  <th className="py-2 px-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {dailySummary.map(day => (
-                  <tr
-                    key={day.date}
-                    onClick={() => openDayDetail(day.date)}
-                    className="border-b border-gray-50 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/10 cursor-pointer transition-colors"
-                  >
-                    <td className="py-2.5 px-3 font-medium text-gray-800 dark:text-gray-200 whitespace-nowrap">{day.date}</td>
-                    <td className="py-2.5 px-2 text-center text-gray-700 dark:text-gray-300">{day.orders_count}</td>
-                    <td className="py-2.5 px-2 text-center">
-                      <span className="text-blue-600 font-medium">{day.total_delivered}</span>
-                    </td>
-                    <td className="py-2.5 px-2 text-center">
-                      <span className="text-green-600 font-medium">{day.total_returned}</span>
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
-                      {day.cash_income > 0 ? <span className="text-green-600 font-medium">{formatMoney(day.cash_income)}</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
-                      {day.card_income > 0 ? <span className="text-purple-600 font-medium">{formatMoney(day.card_income)}</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
-                      {day.payme_income > 0 ? <span className="text-indigo-600 font-medium">{formatMoney(day.payme_income)}</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
-                      {day.advance_income > 0 ? <span className="text-blue-500 font-medium">{formatMoney(day.advance_income)}</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-semibold text-gray-900 dark:text-white text-xs whitespace-nowrap">{formatMoney(day.total_income)}</td>
-                    <td className="py-2.5 px-2 text-gray-400">
-                      <ChevronRight size={14} />
-                    </td>
-                  </tr>
+        {dailyOpen && (
+          <div className="mt-4">
+            {dailyLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="h-10 bg-gray-100 dark:bg-gray-700 rounded-lg animate-pulse" />
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : dailySummary.length === 0 ? (
+              <div className="text-center py-8 text-gray-400 text-sm">Ma'lumot yo'q</div>
+            ) : (() => {
+              const PAGE_SIZE = 30
+              const totalPages = Math.ceil(dailySummary.length / PAGE_SIZE)
+              const page = Math.min(dailyPage, totalPages - 1)
+              const slice = dailySummary.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+              return (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 dark:border-gray-700">
+                          <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Buyurtma</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Yetkazildi</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Qaytarildi</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Naqd</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Karta</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Payme</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-gray-500">Avans</th>
+                          <th className="text-right py-2 px-3 text-xs font-medium text-gray-500">Jami</th>
+                          <th className="py-2 px-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {slice.map(day => (
+                          <tr
+                            key={day.date}
+                            onClick={() => openDayDetail(day.date)}
+                            className="border-b border-gray-50 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/10 cursor-pointer transition-colors"
+                          >
+                            <td className="py-2.5 px-3 font-medium text-gray-800 dark:text-gray-200 whitespace-nowrap">{day.date}</td>
+                            <td className="py-2.5 px-2 text-center text-gray-700 dark:text-gray-300">{day.orders_count}</td>
+                            <td className="py-2.5 px-2 text-center"><span className="text-blue-600 font-medium">{day.total_delivered}</span></td>
+                            <td className="py-2.5 px-2 text-center"><span className="text-green-600 font-medium">{day.total_returned}</span></td>
+                            <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
+                              {day.cash_income > 0 ? <span className="text-green-600 font-medium">{formatMoney(day.cash_income)}</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
+                              {day.card_income > 0 ? <span className="text-purple-600 font-medium">{formatMoney(day.card_income)}</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
+                              {day.payme_income > 0 ? <span className="text-indigo-600 font-medium">{formatMoney(day.payme_income)}</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="hidden sm:table-cell py-2.5 px-2 text-right text-xs whitespace-nowrap">
+                              {day.advance_income > 0 ? <span className="text-blue-500 font-medium">{formatMoney(day.advance_income)}</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-semibold text-gray-900 dark:text-white text-xs whitespace-nowrap">{formatMoney(day.total_income)}</td>
+                            <td className="py-2.5 px-2 text-gray-400"><ChevronRight size={14} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
+                      <button
+                        onClick={() => setDailyPage(p => Math.min(p + 1, totalPages - 1))}
+                        disabled={page >= totalPages - 1}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        <ChevronDown size={14} className="-rotate-90" /> Oldingi
+                      </button>
+                      <span className="text-xs text-gray-400">{page + 1} / {totalPages}</span>
+                      <button
+                        onClick={() => setDailyPage(p => Math.max(p - 1, 0))}
+                        disabled={page === 0}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        Keyingi <ChevronDown size={14} className="rotate-90" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
       </div>
 
       {/* Expenses */}
       <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Xarajatlar</h3>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setExpensesOpen(o => !o)}
+            className="flex items-center gap-2 flex-1 text-left bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl px-3 py-2.5 transition-colors"
+          >
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex-1">Xarajatlar</h3>
+            {expenses.length > 0 && (
+              <span className="text-xs text-gray-400">{expenses.length} ta</span>
+            )}
+            {expensesOpen ? <ChevronUp size={15} className="text-gray-500 shrink-0" /> : <ChevronDown size={15} className="text-gray-500 shrink-0" />}
+          </button>
           <button
             onClick={() => setShowExpenseModal(true)}
-            className="flex items-center gap-1.5 btn btn-primary text-sm py-1.5 px-3"
+            className="flex items-center gap-1.5 btn btn-primary text-sm py-1.5 px-3 shrink-0"
           >
             <Plus size={14} /> Qo'shish
           </button>
         </div>
-        {expensesLoading ? (
-          <div className="text-center py-6 text-gray-400 text-sm">Yuklanmoqda...</div>
-        ) : expenses.length === 0 ? (
-          <div className="text-center py-6 text-gray-400 text-sm">Xarajatlar yo'q</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-700">
-                  <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
-                  <th className="text-left py-2 px-2 text-xs font-medium text-gray-500">Sarlavha</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Tur</th>
-                  <th className="text-right py-2 px-3 text-xs font-medium text-gray-500">Summa</th>
-                  <th className="py-2 px-2 w-8"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {expenses.map(exp => (
-                  <tr key={exp.id} className="border-b border-gray-50 dark:border-gray-800">
-                    <td className="py-2.5 px-3 text-gray-500 text-xs whitespace-nowrap">{formatDate(exp.created_at)}</td>
-                    <td className="py-2.5 px-2 text-gray-800 dark:text-gray-200">{exp.title}</td>
-                    <td className="py-2.5 px-2 text-center">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${exp.payment_method === 'naqd' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'}`}>
-                        {exp.payment_method === 'naqd' ? 'Naqd' : 'Karta'}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-semibold text-red-500 whitespace-nowrap">−{formatMoney(exp.amount)}</td>
-                    <td className="py-2.5 px-2">
-                      <button onClick={() => handleDeleteExpense(exp.id)} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-300 hover:text-red-500 transition-colors">
-                        <Trash2 size={13} />
+        {expensesOpen && (
+          <div className="mt-4">
+            {expensesLoading ? (
+              <div className="text-center py-6 text-gray-400 text-sm">Yuklanmoqda...</div>
+            ) : expenses.length === 0 ? (
+              <div className="text-center py-6 text-gray-400 text-sm">Xarajatlar yo'q</div>
+            ) : (() => {
+              const PAGE_SIZE = 30
+              const totalPages = Math.ceil(expenses.length / PAGE_SIZE)
+              const page = Math.min(expensesPage, totalPages - 1)
+              const slice = expenses.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+              return (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 dark:border-gray-700">
+                          <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
+                          <th className="text-left py-2 px-2 text-xs font-medium text-gray-500">Sarlavha</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-gray-500">Tur</th>
+                          <th className="text-right py-2 px-3 text-xs font-medium text-gray-500">Summa</th>
+                          {canDeleteExpense && <th className="py-2 px-2 w-8"></th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {slice.map(exp => (
+                          <tr key={exp.id} className="border-b border-gray-50 dark:border-gray-800">
+                            <td className="py-2.5 px-3 text-gray-500 text-xs whitespace-nowrap">{formatDate(exp.created_at)}</td>
+                            <td className="py-2.5 px-2 text-gray-800 dark:text-gray-200">{exp.title}</td>
+                            <td className="py-2.5 px-2 text-center">
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${exp.payment_method === 'naqd' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'}`}>
+                                {exp.payment_method === 'naqd' ? 'Naqd' : 'Karta'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-semibold text-red-500 whitespace-nowrap">−{formatMoney(exp.amount)}</td>
+                            {canDeleteExpense && (
+                              <td className="py-2.5 px-2">
+                                <button onClick={() => setDeleteExpenseTarget({ id: exp.id, title: exp.title, amount: exp.amount })} className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 transition-colors">
+                                  <Trash2 size={13} />
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
+                      <button
+                        onClick={() => setExpensesPage(p => Math.min(p + 1, totalPages - 1))}
+                        disabled={page >= totalPages - 1}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        <ChevronDown size={14} className="-rotate-90" /> Oldingi
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <span className="text-xs text-gray-400">{page + 1} / {totalPages}</span>
+                      <button
+                        onClick={() => setExpensesPage(p => Math.max(p - 1, 0))}
+                        disabled={page === 0}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        Keyingi <ChevronDown size={14} className="rotate-90" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
       </div>
 
       {/* Debt history */}
       <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Qarz tarixi</h3>
-          <span className="text-xs text-gray-400">so'nggi 30 kun</span>
-        </div>
-        {debtSummaryLoading ? (
-          <div className="text-center py-6 text-gray-400 text-sm">Yuklanmoqda...</div>
-        ) : debtSummary.length === 0 ? (
-          <div className="text-center py-6 text-gray-400 text-sm">Qarz operatsiyalari yo'q</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-gray-700">
-                  <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-red-400">Berdi</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-red-400">Summa</th>
-                  <th className="text-center py-2 px-2 text-xs font-medium text-green-500">Oldi</th>
-                  <th className="hidden sm:table-cell text-right py-2 px-3 text-xs font-medium text-green-500">Summa</th>
-                </tr>
-              </thead>
-              <tbody>
-                {debtSummary.map(day => (
-                  <tr
-                    key={day.date}
-                    onClick={() => openDebtDayDetail(day.date)}
-                    className="border-b border-gray-50 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/10 cursor-pointer transition-colors"
-                  >
-                    <td className="py-2.5 px-3 font-medium text-gray-800 dark:text-gray-200 whitespace-nowrap">{day.date}</td>
-                    <td className="py-2.5 px-2 text-center">
-                      {day.debt_count > 0 ? <span className="text-red-500 font-medium">{day.debt_count} ta</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-2 text-right text-red-500 text-xs whitespace-nowrap">
-                      {day.debt_total > 0 ? formatMoney(day.debt_total) : '—'}
-                    </td>
-                    <td className="py-2.5 px-2 text-center">
-                      {day.payment_count > 0 ? <span className="text-green-600 font-medium">{day.payment_count} ta</span> : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="hidden sm:table-cell py-2.5 px-3 text-right text-green-600 text-xs whitespace-nowrap">
-                      {day.payment_total > 0 ? formatMoney(day.payment_total) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <button
+          onClick={() => setDebtOpen(o => !o)}
+          className="w-full flex items-center gap-2 text-left bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl px-3 py-2.5 transition-colors"
+        >
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex-1">Qarz tarixi</h3>
+          {debtSummary.length > 0 && (
+            <span className="text-xs text-gray-400">{debtSummary.length} kun</span>
+          )}
+          {debtOpen ? <ChevronUp size={15} className="text-gray-500 shrink-0" /> : <ChevronDown size={15} className="text-gray-500 shrink-0" />}
+        </button>
+        {debtOpen && (
+          <div className="mt-4">
+            {debtSummaryLoading ? (
+              <div className="text-center py-6 text-gray-400 text-sm">Yuklanmoqda...</div>
+            ) : debtSummary.length === 0 ? (
+              <div className="text-center py-6 text-gray-400 text-sm">Qarz operatsiyalari yo'q</div>
+            ) : (() => {
+              const PAGE_SIZE = 30
+              const totalPages = Math.ceil(debtSummary.length / PAGE_SIZE)
+              const page = Math.min(debtPage, totalPages - 1)
+              const slice = debtSummary.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+              return (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 dark:border-gray-700">
+                          <th className="text-left py-2 px-3 text-xs font-medium text-gray-500">Sana</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-red-400">Berdi</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-2 text-xs font-medium text-red-400">Summa</th>
+                          <th className="text-center py-2 px-2 text-xs font-medium text-green-500">Oldi</th>
+                          <th className="hidden sm:table-cell text-right py-2 px-3 text-xs font-medium text-green-500">Summa</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {slice.map(day => (
+                          <tr
+                            key={day.date}
+                            onClick={() => openDebtDayDetail(day.date)}
+                            className="border-b border-gray-50 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/10 cursor-pointer transition-colors"
+                          >
+                            <td className="py-2.5 px-3 font-medium text-gray-800 dark:text-gray-200 whitespace-nowrap">{day.date}</td>
+                            <td className="py-2.5 px-2 text-center">
+                              {day.debt_count > 0 ? <span className="text-red-500 font-medium">{day.debt_count} ta</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="hidden sm:table-cell py-2.5 px-2 text-right text-red-500 text-xs whitespace-nowrap">
+                              {day.debt_total > 0 ? formatMoney(day.debt_total) : '—'}
+                            </td>
+                            <td className="py-2.5 px-2 text-center">
+                              {day.payment_count > 0 ? <span className="text-green-600 font-medium">{day.payment_count} ta</span> : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="hidden sm:table-cell py-2.5 px-3 text-right text-green-600 text-xs whitespace-nowrap">
+                              {day.payment_total > 0 ? formatMoney(day.payment_total) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
+                      <button
+                        onClick={() => setDebtPage(p => Math.min(p + 1, totalPages - 1))}
+                        disabled={page >= totalPages - 1}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        <ChevronDown size={14} className="-rotate-90" /> Oldingi
+                      </button>
+                      <span className="text-xs text-gray-400">{page + 1} / {totalPages}</span>
+                      <button
+                        onClick={() => setDebtPage(p => Math.max(p - 1, 0))}
+                        disabled={page === 0}
+                        className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1"
+                      >
+                        Keyingi <ChevronDown size={14} className="rotate-90" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
       </div>
@@ -952,6 +1087,86 @@ function CourierDetail() {
                 className="btn btn-primary flex-1"
               >
                 {expenseSaving ? 'Saqlanmoqda...' : 'Saqlash'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Set Password Modal */}
+      {showSetPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-sm shadow-2xl p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Parol o'rnatish</h2>
+              <button onClick={() => setShowSetPasswordModal(false)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400">✕</button>
+            </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              Kuryer <strong>{courier?.first_name} {courier?.last_name}</strong> uchun yangi parol o'rnating.<br />
+              Kuryer shu parol bilan <span className="font-mono text-xs">akowater.duckdns.org</span> orqali kiradi.
+            </p>
+            <input
+              type="text"
+              className="input w-full mb-4"
+              placeholder="Yangi parol (kamida 4 belgi)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setShowSetPasswordModal(false)} className="btn btn-secondary flex-1">Bekor</button>
+              <button
+                disabled={passwordSaving || newPassword.length < 4}
+                className="btn btn-primary flex-1"
+                onClick={async () => {
+                  setPasswordSaving(true)
+                  try {
+                    await api.post(`/couriers/${id}/set-password`, { password: newPassword })
+                    toast.success('Parol muvaffaqiyatli o\'rnatildi')
+                    setShowSetPasswordModal(false)
+                  } catch {
+                    toast.error('Xatolik yuz berdi')
+                  } finally {
+                    setPasswordSaving(false)
+                  }
+                }}
+              >
+                {passwordSaving ? 'Saqlanmoqda...' : 'Saqlash'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete expense confirm modal */}
+      {deleteExpenseTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 mx-auto mb-4">
+              <Trash2 size={22} className="text-red-600 dark:text-red-400" />
+            </div>
+            <h3 className="text-lg font-bold text-center text-gray-900 dark:text-white mb-1">Xarajatni o'chirish</h3>
+            <p className="text-sm text-center text-gray-500 dark:text-gray-400 mb-1">
+              <span className="font-medium text-gray-800 dark:text-gray-200">"{deleteExpenseTarget.title}"</span>
+            </p>
+            <p className="text-center text-red-600 font-bold text-xl mb-3">{formatMoney(deleteExpenseTarget.amount)}</p>
+            <p className="text-xs text-center text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2 mb-4">
+              Pul kuryer smena holatiga qarab balansgа yoki kassaga qaytariladi
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteExpenseTarget(null)}
+                disabled={deletingExpense}
+                className="flex-1 btn btn-secondary"
+              >
+                Bekor
+              </button>
+              <button
+                onClick={handleDeleteExpense}
+                disabled={deletingExpense}
+                className="flex-1 btn bg-red-600 hover:bg-red-700 text-white border-0 disabled:opacity-50"
+              >
+                {deletingExpense ? 'O\'chirilmoqda...' : 'O\'chirish'}
               </button>
             </div>
           </div>
@@ -1225,7 +1440,8 @@ function CloseShiftModal({ courier, onClose, onDone }: { courier: Courier; onClo
     actual_payme: courier.payme_balance,
     actual_full_containers: courier.full_containers,
     actual_empty_containers: courier.empty_containers,
-    note: ''
+    note: '',
+    return_goods: true,
   })
   const [saving, setSaving] = useState(false)
 
@@ -1240,8 +1456,8 @@ function CloseShiftModal({ courier, onClose, onDone }: { courier: Courier; onClo
   const save = async () => {
     setSaving(true)
     try {
-      // First return all products to warehouse
-      if (inventory.length > 0) {
+      // Return products to warehouse only if return_goods is true
+      if (form.return_goods && inventory.length > 0) {
         const returnItems = inventory.map(item => ({
           product_id: item.product_id,
           quantity: item.quantity
@@ -1249,7 +1465,6 @@ function CloseShiftModal({ courier, onClose, onDone }: { courier: Courier; onClo
         await api.post(`/couriers/${courier.id}/return-products`, { items: returnItems })
       }
 
-      // Then close the shift
       await api.post(`/couriers/${courier.id}/shift/close`, form)
       toast.success('Smena muvaffaqiyatli yopildi!')
       onDone()
@@ -1275,13 +1490,13 @@ function CloseShiftModal({ courier, onClose, onDone }: { courier: Courier; onClo
           {loadingInventory ? (
             <div className="text-sm text-gray-400 text-center py-2">Mahsulotlar yuklanmoqda...</div>
           ) : inventory.length > 0 ? (
-            <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
-              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200 mb-2">
-                Quyidagi mahsulotlar omborga qaytariladi:
+            <div className={`p-3 rounded-lg border ${form.return_goods ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800' : 'bg-gray-50 dark:bg-gray-700/40 border-gray-200 dark:border-gray-600'}`}>
+              <p className={`text-sm font-medium mb-2 ${form.return_goods ? 'text-yellow-800 dark:text-yellow-200' : 'text-gray-500 dark:text-gray-400'}`}>
+                {form.return_goods ? 'Quyidagi mahsulotlar omborga qaytariladi:' : 'Kuryerda qoladigan mahsulotlar:'}
               </p>
               <div className="space-y-1">
                 {inventory.map(item => (
-                  <div key={item.product_id} className="flex justify-between text-sm text-yellow-700 dark:text-yellow-300">
+                  <div key={item.product_id} className={`flex justify-between text-sm ${form.return_goods ? 'text-yellow-700 dark:text-yellow-300' : 'text-gray-500 dark:text-gray-400'}`}>
                     <span>{item.product_name}</span>
                     <span className="font-semibold">{item.quantity} ta</span>
                   </div>
@@ -1342,6 +1557,38 @@ function CloseShiftModal({ courier, onClose, onDone }: { courier: Courier; onClo
               />
             </div>
           </div>
+
+          {/* Return goods toggle */}
+          {(form.actual_full_containers > 0 || inventory.length > 0) && (
+            <div className="rounded-xl border-2 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, return_goods: true }))}
+                className={`w-full flex items-start gap-3 p-3.5 text-left transition-colors ${form.return_goods ? 'bg-blue-50 dark:bg-blue-900/20 border-b-2 border-blue-200 dark:border-blue-700' : 'bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
+              >
+                <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${form.return_goods ? 'border-blue-500 bg-blue-500' : 'border-gray-300'}`}>
+                  {form.return_goods && <div className="w-2 h-2 rounded-full bg-white" />}
+                </div>
+                <div>
+                  <p className={`text-sm font-semibold ${form.return_goods ? 'text-blue-700 dark:text-blue-300' : 'text-gray-700 dark:text-gray-300'}`}>Tovarni omborga qaytarish</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Mahsulot va idishlar omborga topshiriladi</p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, return_goods: false }))}
+                className={`w-full flex items-start gap-3 p-3.5 text-left transition-colors ${!form.return_goods ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
+              >
+                <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${!form.return_goods ? 'border-amber-500 bg-amber-500' : 'border-gray-300'}`}>
+                  {!form.return_goods && <div className="w-2 h-2 rounded-full bg-white" />}
+                </div>
+                <div>
+                  <p className={`text-sm font-semibold ${!form.return_goods ? 'text-amber-700 dark:text-amber-300' : 'text-gray-700 dark:text-gray-300'}`}>Tovarni kuryerda qoldirish</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Kuryer ertasi kuni omborga kelmay to'g'ridan yetkazadi</p>
+                </div>
+              </button>
+            </div>
+          )}
 
           <div>
             <label className="label">Izoh (ixtiyoriy)</label>

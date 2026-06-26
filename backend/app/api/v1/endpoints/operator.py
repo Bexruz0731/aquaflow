@@ -1,4 +1,5 @@
 from typing import Optional
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -69,6 +70,55 @@ async def submit_cash(
         "submitted_cash": submission.cash_amount,
         "submitted_card": submission.card_amount,
         "total": submission.total_amount,
+    }
+
+
+@router.post("/{operator_id}/collect-cash")
+async def collect_cash_from_operator(
+    operator_id: UUID,
+    data: SubmitCashRequest,
+    user: User = Depends(require_boshliq),
+    db: AsyncSession = Depends(get_db),
+):
+    """Boss collects cash from operator. Resets operator balance to zero."""
+    op_result = await db.execute(
+        select(User).where(
+            User.id == operator_id,
+            User.tenant_id == user.tenant_id,
+            User.role == UserRole.OPERATOR,
+        ).with_for_update()
+    )
+    operator = op_result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator topilmadi")
+
+    if (operator.cash_balance or 0) == 0 and (operator.card_balance or 0) == 0:
+        raise HTTPException(status_code=400, detail="Operatorda topshiriladigan pul yo'q")
+
+    collected_cash = operator.cash_balance or 0
+    collected_card = operator.card_balance or 0
+
+    submission = OperatorCashSubmission(
+        tenant_id=operator.tenant_id,
+        operator_id=operator.id,
+        collected_by_id=user.id,
+        cash_amount=collected_cash,
+        card_amount=collected_card,
+        total_amount=collected_cash + collected_card,
+        note=data.note,
+    )
+    db.add(submission)
+
+    operator.cash_balance = 0
+    operator.card_balance = 0
+
+    await db.flush()
+    return {
+        "ok": True,
+        "operator_name": f"{operator.first_name} {operator.last_name or ''}".strip(),
+        "collected_cash": collected_cash,
+        "collected_card": collected_card,
+        "total": collected_cash + collected_card,
     }
 
 

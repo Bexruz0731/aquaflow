@@ -534,7 +534,7 @@ function OrderActionsMenu({
 // ── Create Order Modal ─────────────────────────────────────────────────────────
 
 function CreateOrderModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const [clients, setClients] = useState<{ id: string; display_name?: string | null; phone: string; addresses?: { address_text: string; is_primary: boolean }[] }[]>([])
+  const [clients, setClients] = useState<{ id: string; display_name?: string | null; phone: string; debt_amount?: number; addresses?: { address_text: string; is_primary: boolean }[] }[]>([])
   const [clientsLoading, setClientsLoading] = useState(false)
   const [clientsTotal, setClientsTotal] = useState(0)
   const [products, setProducts] = useState<{ id: string; name: string; price: number }[]>([])
@@ -671,7 +671,12 @@ function CreateOrderModal({ onClose, onDone }: { onClose: () => void; onDone: ()
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium text-gray-900 dark:text-white">{c.display_name ?? c.addresses?.find(a => a.is_primary)?.address_text ?? c.addresses?.[0]?.address_text ?? c.phone}</span>
-                        <span className="text-xs text-gray-400 shrink-0">{c.phone}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {(c.debt_amount ?? 0) > 0 && (
+                            <span className="text-xs font-bold text-red-500">Qarz: {formatMoney(c.debt_amount!)}</span>
+                          )}
+                          <span className="text-xs text-gray-400">{c.phone}</span>
+                        </div>
                       </div>
                       {primaryAddr && <div className="text-xs text-gray-500 mt-0.5 truncate">{primaryAddr.address_text}</div>}
                     </button>
@@ -686,6 +691,13 @@ function CreateOrderModal({ onClose, onDone }: { onClose: () => void; onDone: ()
               </button>
             )}
           </div>
+          {clientId && selectedClient && (selectedClient.debt_amount ?? 0) > 0 && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm">
+              <span className="text-red-500">⚠</span>
+              <span className="text-red-700 dark:text-red-400">Bu mijozning qarzi bor:</span>
+              <span className="font-bold text-red-600 dark:text-red-400">{formatMoney(selectedClient.debt_amount!)}</span>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Yetkazib berish manzili</label>
             <textarea value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)}
@@ -1003,7 +1015,9 @@ export default function Orders() {
                     <OrderStatusBadge status={order.status} />
                   </div>
                   <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                    {order.is_walkin ? (order.walkin_store || order.walkin_phone || 'Tez sotuv') : (order.client_name ?? '—')}
+                    {order.is_walkin && !order.client_id
+                      ? (order.walkin_store || order.walkin_phone || 'Tez sotuv')
+                      : (order.client_name ?? order.walkin_address ?? '—')}
                   </p>
                   {(order.client_phone || order.walkin_phone) && (
                     <p className="text-xs text-gray-400">{order.client_phone || order.walkin_phone}</p>
@@ -1190,17 +1204,21 @@ export default function Orders() {
               {viewOrder.is_walkin && (
                 <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 rounded-xl px-3 py-2">
                   <span className="text-xs font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-600 px-2 py-0.5 rounded-full">Tez sotuv</span>
-                  <span className="text-xs text-amber-700 dark:text-amber-400">Ro'yxatdan o'tmagan mijoz</span>
+                  {!viewOrder.client_id && (
+                    <span className="text-xs text-amber-700 dark:text-amber-400">Ro'yxatdan o'tmagan mijoz</span>
+                  )}
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p className="text-gray-400 text-xs mb-0.5">{viewOrder.is_walkin ? 'Tez sotuv' : 'Mijoz'}</p>
+                  <p className="text-gray-400 text-xs mb-0.5">{viewOrder.is_walkin && !viewOrder.client_id ? 'Tez sotuv' : 'Mijoz'}</p>
                   <p className="font-medium">
-                    {viewOrder.is_walkin ? (viewOrder.walkin_store || viewOrder.walkin_phone || '—') : (viewOrder.client_name ?? '—')}
+                    {viewOrder.is_walkin && !viewOrder.client_id
+                      ? (viewOrder.walkin_store || viewOrder.walkin_phone || '—')
+                      : (viewOrder.client_name ?? viewOrder.walkin_address ?? '—')}
                   </p>
                   <p className="text-gray-400">
-                    {viewOrder.is_walkin ? (viewOrder.walkin_phone ?? '') : (viewOrder.client_phone ?? '')}
+                    {viewOrder.is_walkin && !viewOrder.client_id ? (viewOrder.walkin_phone ?? '') : (viewOrder.client_phone ?? '')}
                   </p>
                 </div>
                 <div><p className="text-gray-400 text-xs mb-0.5">Sana</p><p className="font-medium">{formatDateTime(viewOrder.created_at)}</p></div>
@@ -1243,6 +1261,18 @@ export default function Orders() {
                     )
                   })}
                 </div>
+                {(viewOrder.containers_returned ?? 0) > 0 && (
+                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-green-100 dark:border-green-900/30 text-sm">
+                    <span className="text-green-700 dark:text-green-400 font-medium">↩ Qaytarilgan tara</span>
+                    <span className="font-bold text-green-700 dark:text-green-400">{viewOrder.containers_returned} ta</span>
+                  </div>
+                )}
+                {(viewOrder.client_debt ?? 0) > 0 && (
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-red-100 dark:border-red-900/30 text-sm">
+                    <span className="text-red-500 font-medium">⚠ Mijoz qarzi</span>
+                    <span className="font-bold text-red-500">{formatMoney(viewOrder.client_debt!)}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>

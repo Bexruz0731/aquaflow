@@ -17,8 +17,17 @@ interface Expense {
   amount: number
   payment_method: string
   note: string | null
+  courier_id: string | null
   courier_name: string | null
   created_at: string
+}
+
+interface DeleteTarget {
+  id: string
+  type: 'admin' | 'courier'
+  courier_id: string | null
+  title: string
+  amount: number
 }
 
 interface ExpenseForm {
@@ -41,6 +50,8 @@ export default function AdminExpenses() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<ExpenseForm>(EMPTY_FORM)
   const [formError, setFormError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin-expenses', page, search, dateFrom, dateTo],
@@ -77,10 +88,23 @@ export default function AdminExpenses() {
     onError: (e: any) => setFormError(e?.response?.data?.detail || 'Xatolik'),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/admin-expenses/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-expenses'] }),
-  })
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      if (deleteTarget.type === 'courier' && deleteTarget.courier_id) {
+        await api.delete(`/couriers/${deleteTarget.courier_id}/expenses/${deleteTarget.id}`)
+      } else {
+        await api.delete(`/admin-expenses/${deleteTarget.id}`)
+      }
+      qc.invalidateQueries({ queryKey: ['admin-expenses'] })
+      setDeleteTarget(null)
+    } catch {
+      // keep modal open on error
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const handleSubmit = () => {
     if (!form.title.trim()) { setFormError("Sarlavha kiritilishi shart"); return }
@@ -273,21 +297,19 @@ export default function AdminExpenses() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 justify-end">
                         {e.type === 'admin' && (
-                          <>
-                            <button
-                              onClick={() => startEdit(e)}
-                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
-                            >
-                              <Edit2 size={15} />
-                            </button>
-                            <button
-                              onClick={() => { if (confirm('O\'chirilsinmi?')) deleteMutation.mutate(e.id) }}
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </>
+                          <button
+                            onClick={() => startEdit(e)}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                          >
+                            <Edit2 size={15} />
+                          </button>
                         )}
+                        <button
+                          onClick={() => setDeleteTarget({ id: e.id, type: e.type, courier_id: e.courier_id ?? null, title: e.title, amount: e.amount })}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                        >
+                          <Trash2 size={15} />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -297,6 +319,43 @@ export default function AdminExpenses() {
           </div>
         )}
       </div>
+
+      {/* Delete confirm modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/30 mx-auto mb-4">
+              <Trash2 size={22} className="text-red-600 dark:text-red-400" />
+            </div>
+            <h3 className="text-lg font-bold text-center text-gray-900 dark:text-white mb-1">Xarajatni o'chirish</h3>
+            <p className="text-sm text-center text-gray-500 dark:text-gray-400 mb-1">
+              <span className="font-medium text-gray-800 dark:text-gray-200">"{deleteTarget.title}"</span>
+            </p>
+            <p className="text-center text-red-600 font-bold text-xl mb-2">{formatMoney(deleteTarget.amount)}</p>
+            {deleteTarget.type === 'courier' && (
+              <p className="text-xs text-center text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded-lg px-3 py-2 mb-4">
+                Pul kuryer smena holatiga qarab balansgа yoki kassaga qaytariladi
+              </p>
+            )}
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="flex-1 btn btn-secondary"
+              >
+                Bekor
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleting}
+                className="flex-1 btn bg-red-600 hover:bg-red-700 text-white border-0 disabled:opacity-50"
+              >
+                {deleting ? 'O\'chirilmoqda...' : 'O\'chirish'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pagination */}
       {data && data.pages > 1 && (

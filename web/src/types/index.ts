@@ -41,6 +41,9 @@ export interface Order {
   created_at: string
   address_text: string | null
   items: OrderItem[]
+  containers_returned?: number
+  containers_delivered?: number
+  client_debt?: number
   is_walkin?: boolean
   walkin_phone?: string | null
   walkin_address?: string | null
