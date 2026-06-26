@@ -1635,6 +1635,22 @@ async def edit_order_preview(
                 changes.append({"type": "advance", "delta": refund,
                                 "label": f"Mijoz avansiga +{refund:,} so'm"})
 
+    if data.containers_delivered is not None or data.containers_returned is not None:
+        old_d = order.containers_delivered or 0
+        old_r = order.containers_returned or 0
+        new_d = data.containers_delivered if data.containers_delivered is not None else old_d
+        new_r = data.containers_returned if data.containers_returned is not None else old_r
+        if new_d != old_d or new_r != old_r:
+            bal_delta = (new_d - old_d) - (new_r - old_r)
+            sign = "+" if bal_delta >= 0 else ""
+            changes.append({
+                "type": "containers",
+                "label": (
+                    f"Tara: yetkazildi {old_d}→{new_d}, qaytarildi {old_r}→{new_r}"
+                    f" | Mijoz balansi {sign}{bal_delta}"
+                ),
+            })
+
     changes.append({"type": "summary",
                     "label": f"Jami: {order.total_amount:,} → {new_total:,}, to'lov: {old_payable:,} → {new_payable:,}"})
     return {
@@ -1718,6 +1734,89 @@ async def edit_order(
     # Update discount
     if data.discount_amount is not None:
         order.discount_amount = min(data.discount_amount, new_total)
+
+    # Update containers (for completed orders — adjusts client balance and warehouse)
+    if data.containers_delivered is not None or data.containers_returned is not None:
+        old_delivered = order.containers_delivered or 0
+        old_returned = order.containers_returned or 0
+        new_delivered = data.containers_delivered if data.containers_delivered is not None else old_delivered
+        new_returned = data.containers_returned if data.containers_returned is not None else old_returned
+        delivered_delta = new_delivered - old_delivered
+        returned_delta = new_returned - old_returned
+        client_balance_delta = delivered_delta - returned_delta
+
+        order.containers_delivered = new_delivered
+        order.containers_returned = new_returned
+
+        if order.client_id and client_balance_delta != 0:
+            cb_r = await db.execute(
+                select(ContainerClientBalance)
+                .where(ContainerClientBalance.client_id == order.client_id,
+                       ContainerClientBalance.tenant_id == user.tenant_id)
+                .with_for_update()
+            )
+            cb = cb_r.scalar_one_or_none()
+            if cb:
+                old_bal = cb.balance
+                new_bal = max(0, cb.balance + client_balance_delta)
+                cb.balance = new_bal
+                db.add(ContainerTransaction(
+                    tenant_id=user.tenant_id,
+                    client_id=order.client_id,
+                    order_id=order.id,
+                    created_by_id=user.id,
+                    transaction_type="adjustment",
+                    quantity=client_balance_delta,
+                    balance_before=old_bal,
+                    balance_after=new_bal,
+                    note=f"Operator tomonidan buyurtma #{order.id} tuzatildi",
+                ))
+                client_r_cont = await db.execute(
+                    select(Client).where(Client.id == order.client_id).with_for_update()
+                )
+                cl_cont = client_r_cont.scalar_one_or_none()
+                if cl_cont:
+                    cl_cont.container_balance = max(0, cl_cont.container_balance + client_balance_delta)
+
+        if returned_delta != 0:
+            returnable_prod_r = await db.execute(
+                select(Product)
+                .join(OrderItem, OrderItem.product_id == Product.id)
+                .where(OrderItem.order_id == order.id, Product.is_returnable_container == True)
+                .limit(1)
+            )
+            returnable_prod = returnable_prod_r.scalar_one_or_none()
+            if returnable_prod:
+                wi_r = await db.execute(
+                    select(WarehouseItem).where(
+                        WarehouseItem.product_id == returnable_prod.id,
+                        WarehouseItem.tenant_id == user.tenant_id,
+                    )
+                )
+                wi = wi_r.scalar_one_or_none()
+                if wi:
+                    stock_r = await db.execute(
+                        select(WarehouseStock).where(WarehouseStock.item_id == wi.id)
+                        .with_for_update()
+                    )
+                    stock = stock_r.scalar_one_or_none()
+                    if stock:
+                        before = stock.empty_quantity
+                        stock.empty_quantity = max(0, stock.empty_quantity + returned_delta)
+                        db.add(WarehouseTransaction(
+                            tenant_id=user.tenant_id,
+                            item_id=wi.id,
+                            transaction_type=(
+                                WarehouseTransactionType.KIRIM
+                                if returned_delta > 0
+                                else WarehouseTransactionType.CHIQIM
+                            ),
+                            quantity=abs(returned_delta),
+                            balance_before=before,
+                            balance_after=stock.empty_quantity,
+                            note=f"Operator tuzatish: buyurtma #{order.id}",
+                            created_by_id=user.id,
+                        ))
 
     new_payable = order.total_amount - order.discount_amount
     delta = new_payable - old_payable
