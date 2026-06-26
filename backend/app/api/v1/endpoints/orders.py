@@ -1559,12 +1559,20 @@ class OrderEditItem(BaseModel):
     quantity: int = PydanticField(ge=1)
 
 
+class CourierOrderEditRequest(BaseModel):
+    containers_delivered: Optional[int] = PydanticField(default=None, ge=0)
+    containers_returned: Optional[int] = PydanticField(default=None, ge=0)
+    total_amount: Optional[int] = PydanticField(default=None, ge=0)
+
+
 class OrderEditRequest(BaseModel):
     client_id: Optional[UUID] = None
     address_text: Optional[str] = None
     items: Optional[List[OrderEditItem]] = None
     discount_amount: Optional[int] = PydanticField(default=None, ge=0)
     comment: Optional[str] = None
+    containers_delivered: Optional[int] = PydanticField(default=None, ge=0)
+    containers_returned: Optional[int] = PydanticField(default=None, ge=0)
 
 
 
@@ -1805,3 +1813,180 @@ async def edit_order(
     )
     updated = result2.scalar_one()
     return await _enrich_order(updated, db)
+
+
+@router.patch("/{order_id}/courier-edit")
+async def courier_edit_order(
+    order_id: int,
+    data: CourierOrderEditRequest,
+    user: User = Depends(require_courier),
+    db: AsyncSession = Depends(get_db),
+):
+    """Courier corrects containers/price on their own completed order.
+    Only allowed when shift is open — closed-shift edits require boshliq.
+    Never touches courier cash/card/payme balances (reconciled at shift close).
+    """
+    # 1. Get courier — verify shift is open
+    courier_r = await db.execute(
+        select(Courier).where(Courier.user_id == user.id, Courier.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
+    courier = courier_r.scalar_one_or_none()
+    if not courier:
+        raise HTTPException(status_code=404, detail="Courier profile not found")
+    if courier.shift_status != ShiftStatus.OPEN:
+        raise HTTPException(status_code=403, detail="Smena yopilgan. Faqat boshliq tahrirlashi mumkin.")
+
+    # 2. Get order — verify ownership and status
+    order_r = await db.execute(
+        select(Order).where(Order.id == order_id, Order.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
+    order = order_r.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.courier_id != courier.id:
+        raise HTTPException(status_code=403, detail="Bu buyurtma sizga tegishli emas")
+    if order.status not in (OrderStatus.YETKAZILDI, OrderStatus.YOPILDI):
+        raise HTTPException(status_code=400, detail="Faqat yetkazilgan buyurtmalarni tahrirlash mumkin")
+
+    # 3. Container corrections
+    old_delivered = order.containers_delivered or 0
+    old_returned = order.containers_returned or 0
+    new_delivered = data.containers_delivered if data.containers_delivered is not None else old_delivered
+    new_returned = data.containers_returned if data.containers_returned is not None else old_returned
+
+    delivered_delta = new_delivered - old_delivered
+    returned_delta = new_returned - old_returned
+    # Net effect on client balance: +delivered - returned
+    client_balance_delta = delivered_delta - returned_delta
+
+    if delivered_delta != 0 or returned_delta != 0:
+        order.containers_delivered = new_delivered
+        order.containers_returned = new_returned
+
+        # Update client container balance
+        if order.client_id and client_balance_delta != 0:
+            cb_r = await db.execute(
+                select(ContainerClientBalance)
+                .where(ContainerClientBalance.client_id == order.client_id,
+                       ContainerClientBalance.tenant_id == user.tenant_id)
+                .with_for_update()
+            )
+            cb = cb_r.scalar_one_or_none()
+            if cb:
+                old_bal = cb.balance
+                new_bal = max(0, cb.balance + client_balance_delta)
+                cb.balance = new_bal
+                db.add(ContainerTransaction(
+                    tenant_id=user.tenant_id,
+                    client_id=order.client_id,
+                    order_id=order.id,
+                    created_by_id=user.id,
+                    transaction_type="adjustment",
+                    quantity=client_balance_delta,
+                    balance_before=old_bal,
+                    balance_after=new_bal,
+                    note=f"Kuryer tomonidan buyurtma #{order.id} tuzatildi",
+                ))
+                # Sync denorm field on Client
+                client_r = await db.execute(
+                    select(Client).where(Client.id == order.client_id).with_for_update()
+                )
+                cl = client_r.scalar_one_or_none()
+                if cl:
+                    cl.container_balance = max(0, cl.container_balance + client_balance_delta)
+
+        # Update warehouse empty stock:
+        # returned_delta > 0 → more empties collected from client → warehouse gets them back
+        # returned_delta < 0 → fewer empties collected → warehouse loses that many
+        if returned_delta != 0:
+            returnable_prod_r = await db.execute(
+                select(Product)
+                .join(OrderItem, OrderItem.product_id == Product.id)
+                .where(OrderItem.order_id == order.id, Product.is_returnable_container == True)
+                .limit(1)
+            )
+            returnable_prod = returnable_prod_r.scalar_one_or_none()
+            if returnable_prod:
+                wi_r = await db.execute(
+                    select(WarehouseItem).where(
+                        WarehouseItem.product_id == returnable_prod.id,
+                        WarehouseItem.tenant_id == user.tenant_id,
+                    )
+                )
+                wi = wi_r.scalar_one_or_none()
+                if wi:
+                    stock_r = await db.execute(
+                        select(WarehouseStock).where(WarehouseStock.item_id == wi.id)
+                        .with_for_update()
+                    )
+                    stock = stock_r.scalar_one_or_none()
+                    if stock:
+                        before = stock.empty_quantity
+                        stock.empty_quantity = max(0, stock.empty_quantity + returned_delta)
+                        db.add(WarehouseTransaction(
+                            tenant_id=user.tenant_id,
+                            item_id=wi.id,
+                            transaction_type=(
+                                WarehouseTransactionType.KIRIM
+                                if returned_delta > 0
+                                else WarehouseTransactionType.CHIQIM
+                            ),
+                            quantity=abs(returned_delta),
+                            balance_before=before,
+                            balance_after=stock.empty_quantity,
+                            note=f"Kuryer tuzatish: buyurtma #{order.id}",
+                            created_by_id=user.id,
+                        ))
+
+    # 4. Total amount correction — only recalculates debt, never touches courier balances
+    if data.total_amount is not None and data.total_amount != order.total_amount:
+        old_total = order.total_amount
+        order.total_amount = data.total_amount
+        new_net = data.total_amount - (order.discount_amount or 0)
+        new_debt = max(0, new_net - (order.paid_amount or 0))
+        debt_delta = new_debt - (order.debt_amount or 0)
+        order.debt_amount = new_debt
+
+        # Recalculate payment_status
+        paid = order.paid_amount or 0
+        if paid >= new_net:
+            order.payment_status = PaymentStatus.TOLANGAN
+        elif paid > 0:
+            order.payment_status = PaymentStatus.QISMAN
+        else:
+            order.payment_status = PaymentStatus.TOLANMAGAN
+
+        # Propagate debt delta to client
+        if debt_delta != 0 and order.client_id:
+            client_debt_r = await db.execute(
+                select(Client).where(Client.id == order.client_id).with_for_update()
+            )
+            cl_debt = client_debt_r.scalar_one_or_none()
+            if cl_debt:
+                cl_debt.debt_amount = max(0, cl_debt.debt_amount + debt_delta)
+
+            # Update Debt record
+            debt_r = await db.execute(select(Debt).where(Debt.order_id == order.id))
+            debt_rec = debt_r.scalar_one_or_none()
+            if debt_rec:
+                debt_rec.remaining_amount = max(0, debt_rec.remaining_amount + debt_delta)
+                debt_rec.original_amount = max(0, debt_rec.original_amount + debt_delta)
+            elif new_debt > 0 and order.client_id:
+                db.add(Debt(
+                    tenant_id=order.tenant_id,
+                    client_id=order.client_id,
+                    order_id=order.id,
+                    original_amount=new_debt,
+                    remaining_amount=new_debt,
+                ))
+
+    await db.flush()
+    return {
+        "ok": True,
+        "containers_delivered": order.containers_delivered,
+        "containers_returned": order.containers_returned,
+        "total_amount": order.total_amount,
+        "debt_amount": order.debt_amount,
+    }
