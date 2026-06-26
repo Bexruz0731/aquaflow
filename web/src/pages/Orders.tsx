@@ -126,6 +126,9 @@ function EditOrderModal({ order, onClose, onSaved }: { order: Order; onClose: ()
   )
   const [discountAmount, setDiscountAmount] = useState<string>(String(order.discount_amount ?? 0))
   const [comment, setComment] = useState<string>(order.comment ?? '')
+  const [containersDelivered, setContainersDelivered] = useState<string>(String(order.containers_delivered ?? 0))
+  const [containersReturned, setContainersReturned] = useState<string>(String(order.containers_returned ?? 0))
+  const isCompleted = order.status === 'yetkazildi' || order.status === 'yopildi'
 
   const [preview, setPreview] = useState<EditPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -168,6 +171,10 @@ function EditOrderModal({ order, onClose, onSaved }: { order: Order; onClose: ()
     items: items.map(i => ({ product_id: i.product_id, quantity: i.quantity })),
     discount_amount: parseInt(discountAmount) || 0,
     comment: comment || undefined,
+    ...(isCompleted && {
+      containers_delivered: parseInt(containersDelivered) || 0,
+      containers_returned: parseInt(containersReturned) || 0,
+    }),
   })
 
   const loadPreview = async () => {
@@ -376,6 +383,35 @@ function EditOrderModal({ order, onClose, onSaved }: { order: Order; onClose: ()
               className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-sm resize-none"
             />
           </div>
+
+          {/* Containers — only for completed orders */}
+          {isCompleted && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Tara</label>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Yetkazilgan</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={containersDelivered}
+                    onChange={e => setContainersDelivered(e.target.value)}
+                    className="input w-full text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Qaytarilgan</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={containersReturned}
+                    onChange={e => setContainersReturned(e.target.value)}
+                    className="input w-full text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Summary */}
           <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3 text-sm space-y-1">
